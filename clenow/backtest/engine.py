@@ -317,6 +317,9 @@ def run_backtest(
 
     # Process each rebalance pair
     for signal_date, execution_date in rebalance_pairs:
+        # Step 0: Detect and handle delisted positions before computing target
+        _detect_delistings(tracker, data_provider, signal_date)
+
         # Step 2a: Compute target portfolio on signal_date
         current_positions = tracker.get_positions()
         current_cash = tracker.get_cash()
@@ -497,6 +500,67 @@ def _apply_corporate_actions(
                         tracker.apply_dividend(ticker, float(div), row_date)
                     except Exception:
                         pass  # InvariantError if not in positions — ignore
+
+
+def _detect_delistings(
+    tracker: PositionTracker,
+    data_provider: DataProvider,
+    as_of: date,
+) -> None:
+    """Detect and force-close delisted positions.
+
+    A stock is considered delisted if it has no raw_close data on the
+    as_of date but we are still holding it. The position is force-closed
+    at the last available close price.
+
+    This should be called before computing the target portfolio at each
+    rebalance to ensure we don't try to hold delisted stocks.
+    """
+    positions = tracker.get_positions()
+    if not positions:
+        return
+
+    tickers = list(positions.keys())
+
+    # Load price data for the current date to check availability
+    prices = data_provider.load_prices(tickers, as_of, as_of)
+
+    for ticker in tickers:
+        ticker_data = _get_ticker_series(prices, ticker)
+
+        # If no price data at all for as_of, stock may be delisted
+        if ticker_data is None or ticker_data.empty:
+            # Look back to find the last available close price
+            lookback_start = as_of - timedelta(days=30)
+            hist_prices = data_provider.load_prices([ticker], lookback_start, as_of)
+            hist_data = _get_ticker_series(hist_prices, ticker)
+
+            if hist_data is None or hist_data.empty:
+                # No price data at all — force close at entry price (best effort)
+                pos = positions[ticker]
+                tracker.apply_delisting(ticker, pos.entry_price, as_of)
+                logger.warning(
+                    "Delisted %s on %s: no price data, force-closing at entry price %.2f",
+                    ticker, as_of, pos.entry_price,
+                )
+                continue
+
+            # Get the last available close price
+            closes = hist_data["raw_close"].dropna()
+            if closes.empty:
+                pos = positions[ticker]
+                tracker.apply_delisting(ticker, pos.entry_price, as_of)
+                logger.warning(
+                    "Delisted %s on %s: no close data, force-closing at entry price %.2f",
+                    ticker, as_of, pos.entry_price,
+                )
+            else:
+                last_close = float(closes.iloc[-1])
+                tracker.apply_delisting(ticker, last_close, as_of)
+                logger.info(
+                    "Delisted %s on %s: force-closing at last close %.2f",
+                    ticker, as_of, last_close,
+                )
 
 
 def _build_equity_curve(

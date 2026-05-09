@@ -1,6 +1,18 @@
 """Configuration parameters for the Clenow system."""
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class CashInterestPolicy(Enum):
+    """Policy for interest earned on uninvested cash.
+
+    ZERO: No interest on cash (conservative default).
+    T_BILL: Use FRED DGS3MO rate (future implementation).
+    """
+
+    ZERO = "zero"
+    T_BILL = "t_bill"
 
 
 @dataclass(frozen=True)
@@ -33,3 +45,6 @@ class Config:
     # Rebalancing
     rebalance_freq: str = "weekly"  # "weekly" | "biweekly"
     rebalance_dow: int = 0  # 0 = Monday open
+
+    # Cash interest
+    cash_interest_policy: CashInterestPolicy = CashInterestPolicy.ZERO
