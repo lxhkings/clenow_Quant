@@ -62,23 +62,32 @@ class BacktestResult:
 
 
 def _check_sma_break(
-    ticker: str, as_of: date, data_provider: DataProvider, config: Config
+    ticker: str,
+    all_prices: pd.DataFrame,
+    as_of: date,
+    data_provider: DataProvider,
+    config: Config,
 ) -> bool:
-    """Check if a stock's close is below its 100-day SMA.
+    """Return True when the stock closes below its `config.stock_sma`-day SMA.
 
-    Returns True if the stock breaks below its SMA (sell signal).
+    Reads from the preloaded `all_prices` frame first; falls back to a
+    per-ticker query only when the position is no longer in the universe
+    (which `compute_target_portfolio` no longer covers in `all_prices`).
     """
-    start = as_of - _PRICE_LOOKBACK_CALENDAR
-    prices = data_provider.load_prices([ticker], start, as_of)
-    ticker_data = _get_ticker_series(prices, ticker)
-    if ticker_data is None or len(ticker_data) < config.stock_sma:
-        return True  # Not enough data → treat as break (sell)
+    ticker_data = _get_ticker_series(all_prices, ticker)
+    if ticker_data is None:
+        # Held position not in the current universe (e.g. removed from PIT) —
+        # one-off query as a fallback. This is rare and bounded.
+        start = as_of - _PRICE_LOOKBACK_CALENDAR
+        prices = data_provider.load_prices([ticker], start, as_of)
+        ticker_data = _get_ticker_series(prices, ticker)
+        if ticker_data is None:
+            return True
     closes = ticker_data["raw_close"].dropna()
     if len(closes) < config.stock_sma:
         return True
-    sma = closes.iloc[-config.stock_sma :].mean()
-    current = closes.iloc[-1]
-    return current < sma
+    sma = closes.iloc[-config.stock_sma:].mean()
+    return closes.iloc[-1] < sma
 
 
 def compute_target_portfolio(
@@ -171,7 +180,7 @@ def compute_target_portfolio(
     # Remove broken positions from the target, even if they're in the top 20%
     forced_sells: set[str] = set()
     for ticker in current_positions:
-        if _check_sma_break(ticker, as_of, data_provider, config):
+        if _check_sma_break(ticker, all_prices, as_of, data_provider, config):
             forced_sells.add(ticker)
 
     # Remove forced-sell tickers from the filtered list
