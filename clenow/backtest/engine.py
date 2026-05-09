@@ -163,7 +163,8 @@ def compute_target_portfolio(
     ranked = rank_by_score(scores, config.top_pct)
 
     # Step 4: Apply sequential filters (regime, SMA, price, ADV)
-    filtered = apply_filters(ranked, data_provider, as_of, config, current_positions)
+    # Pass pre-loaded all_prices to eliminate N+1 queries
+    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions)
 
     # Step 5: Double exit rule — CRITICAL
     # FIRST check all existing positions for 100-day SMA break

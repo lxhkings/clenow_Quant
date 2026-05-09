@@ -26,13 +26,22 @@ def _make_index_prices(dates: list, closes: list[float]) -> pd.DataFrame:
     )
 
 
-def _make_stock_prices(
-    dates: list, closes: list[float], volumes: list[float]
+def _make_stock_all_prices(
+    ticker: str, dates: list, closes: list[float], volumes: list[float]
 ) -> pd.DataFrame:
-    """Build a DataFrame matching load_prices output for a single ticker."""
+    """Build a MultiIndex DataFrame with (date, ticker) index for all_prices."""
+    idx = pd.MultiIndex.from_tuples(
+        [(d, ticker) for d in dates],
+        names=["date", "ticker"],
+    )
     return pd.DataFrame(
-        {"raw_close": closes, "volume": volumes},
-        index=pd.DatetimeIndex(dates, name="date"),
+        {
+            "raw_close": closes,
+            "raw_high": [c + 1.0 for c in closes],
+            "raw_low": [c - 1.0 for c in closes],
+            "volume": volumes,
+        },
+        index=idx,
     )
 
 
@@ -50,17 +59,18 @@ def _bear_index(n: int = 15) -> pd.DataFrame:
     return _make_index_prices(dates.tolist(), closes)
 
 
-def _passing_stock(
+def _passing_stock_all_prices(
+    ticker: str = "AAPL",
     price: float = 50.0,
     volume: float = 1_000_000.0,
     n: int = N_STOCK,
 ) -> pd.DataFrame:
-    """Stock that passes SMA, price, and ADV filters."""
+    """Stock that passes SMA, price, and ADV filters as MultiIndex all_prices."""
     dates = pd.date_range("2024-05-01", periods=n, freq="D")
     # Rising prices so close > SMA
     closes = [price - 2.0] * (n // 2) + [price + i * 0.5 for i in range(n - n // 2)]
     volumes = [volume] * n
-    return _make_stock_prices(dates.tolist(), closes, volumes)
+    return _make_stock_all_prices(ticker, dates.tolist(), closes, volumes)
 
 
 # ── Tests ────────────────────────────────────────────────────────────
@@ -76,9 +86,12 @@ class TestRegimeFilter:
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bear_index()
-        provider.load_prices.return_value = _passing_stock()
 
-        result = apply_filters(["AAPL"], provider, as_of, config, current_positions=None)
+        all_prices = _passing_stock_all_prices("AAPL")
+
+        result = apply_filters(
+            ["AAPL"], all_prices, provider, as_of, config, current_positions=None
+        )
         assert result == []  # blocked by regime
 
     def test_bear_regime_keeps_existing_position(self):
@@ -88,16 +101,20 @@ class TestRegimeFilter:
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bear_index()
-        provider.load_prices.return_value = _passing_stock()
+
+        all_prices = _passing_stock_all_prices("AAPL")
 
         existing = {
             "AAPL": Position(
-                ticker="AAPL", shares=100, entry_price=50.0,
-                entry_date=date(2024, 1, 1), atr_at_entry=2.0,
+                ticker="AAPL",
+                shares=100,
+                entry_price=50.0,
+                entry_date=date(2024, 1, 1),
+                atr_at_entry=2.0,
             )
         }
         result = apply_filters(
-            ["AAPL"], provider, as_of, config, current_positions=existing
+            ["AAPL"], all_prices, provider, as_of, config, current_positions=existing
         )
         assert result == ["AAPL"]  # existing position kept
 
@@ -108,9 +125,12 @@ class TestRegimeFilter:
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
-        provider.load_prices.return_value = _passing_stock()
 
-        result = apply_filters(["AAPL"], provider, as_of, config, current_positions=None)
+        all_prices = _passing_stock_all_prices("AAPL")
+
+        result = apply_filters(
+            ["AAPL"], all_prices, provider, as_of, config, current_positions=None
+        )
         assert result == ["AAPL"]
 
 
@@ -130,11 +150,9 @@ class TestSMAFilter:
         dates = pd.date_range("2024-05-01", periods=n, freq="D")
         closes = [100.0] * (n // 2) + [80.0 - i * 2 for i in range(n - n // 2)]
         volumes = [1_000_000.0] * n
-        provider.load_prices.return_value = _make_stock_prices(
-            dates.tolist(), closes, volumes
-        )
+        all_prices = _make_stock_all_prices("AAPL", dates.tolist(), closes, volumes)
 
-        result = apply_filters(["AAPL"], provider, as_of, config)
+        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
         assert result == []
 
     def test_above_sma_kept(self):
@@ -144,9 +162,10 @@ class TestSMAFilter:
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
-        provider.load_prices.return_value = _passing_stock()
 
-        result = apply_filters(["AAPL"], provider, as_of, config)
+        all_prices = _passing_stock_all_prices("AAPL")
+
+        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
         assert result == ["AAPL"]
 
 
@@ -167,11 +186,9 @@ class TestPriceFilter:
         # Rising from 3 to 4 → latest close is 4.0, below $5
         closes = [3.0] * (n // 2) + [3.0 + i * 0.1 for i in range(n - n // 2)]
         volumes = [1_000_000.0] * n
-        provider.load_prices.return_value = _make_stock_prices(
-            dates.tolist(), closes, volumes
-        )
+        all_prices = _make_stock_all_prices("AAPL", dates.tolist(), closes, volumes)
 
-        result = apply_filters(["AAPL"], provider, as_of, config)
+        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
         assert result == []
 
     def test_at_min_price_kept(self):
@@ -181,9 +198,10 @@ class TestPriceFilter:
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
-        provider.load_prices.return_value = _passing_stock(price=5.0)
 
-        result = apply_filters(["AAPL"], provider, as_of, config)
+        all_prices = _passing_stock_all_prices("AAPL", price=5.0)
+
+        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
         assert result == ["AAPL"]
 
 
@@ -200,11 +218,9 @@ class TestADVFilter:
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
         # ADV = 50 * 100_000 = $5M → below $10M
-        provider.load_prices.return_value = _passing_stock(
-            price=50.0, volume=100_000.0
-        )
+        all_prices = _passing_stock_all_prices("AAPL", price=50.0, volume=100_000.0)
 
-        result = apply_filters(["AAPL"], provider, as_of, config)
+        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
         assert result == []
 
     def test_sufficient_adv_kept(self):
@@ -217,11 +233,9 @@ class TestADVFilter:
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
         # ADV = 50 * 500_000 = $25M → above $10M
-        provider.load_prices.return_value = _passing_stock(
-            price=50.0, volume=500_000.0
-        )
+        all_prices = _passing_stock_all_prices("AAPL", price=50.0, volume=500_000.0)
 
-        result = apply_filters(["AAPL"], provider, as_of, config)
+        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
         assert result == ["AAPL"]
 
 
@@ -235,9 +249,37 @@ class TestMultipleFilters:
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
-        provider.load_prices.return_value = _passing_stock(price=50.0)
 
-        result = apply_filters(["AAPL", "MSFT", "GOOG"], provider, as_of, config)
+        # Build all_prices for multiple tickers
+        n = N_STOCK
+        dates = pd.date_range("2024-05-01", periods=n, freq="D")
+
+        # AAPL passes
+        aapl_data = _make_stock_all_prices(
+            "AAPL", dates.tolist(),
+            [50.0] * (n // 2) + [55.0 + i for i in range(n - n // 2)],
+            [1_000_000.0] * n,
+        )
+
+        # MSFT passes
+        msft_data = _make_stock_all_prices(
+            "MSFT", dates.tolist(),
+            [50.0] * (n // 2) + [55.0 + i for i in range(n - n // 2)],
+            [1_000_000.0] * n,
+        )
+
+        # GOOG passes
+        goog_data = _make_stock_all_prices(
+            "GOOG", dates.tolist(),
+            [50.0] * (n // 2) + [55.0 + i for i in range(n - n // 2)],
+            [1_000_000.0] * n,
+        )
+
+        all_prices = pd.concat([aapl_data, msft_data, goog_data])
+
+        result = apply_filters(
+            ["AAPL", "MSFT", "GOOG"], all_prices, provider, as_of, config
+        )
         assert result == ["AAPL", "MSFT", "GOOG"]
 
     def test_mixed_pass_fail_preserves_order(self):
@@ -254,42 +296,29 @@ class TestMultipleFilters:
         dates = pd.date_range("2024-05-01", periods=n, freq="D")
 
         # AAPL passes (above SMA, above price, good ADV)
-        aapl_closes = [50.0] * (n // 2) + [55.0 + i for i in range(n - n // 2)]
-        aapl_volumes = [1_000_000.0] * n
+        aapl_data = _make_stock_all_prices(
+            "AAPL", dates.tolist(),
+            [50.0] * (n // 2) + [55.0 + i for i in range(n - n // 2)],
+            [1_000_000.0] * n,
+        )
 
         # MSFT fails SMA (declining)
-        msft_closes = [100.0] * (n // 2) + [60.0 - i * 2 for i in range(n - n // 2)]
-        msft_volumes = [1_000_000.0] * n
+        msft_data = _make_stock_all_prices(
+            "MSFT", dates.tolist(),
+            [100.0] * (n // 2) + [60.0 - i * 2 for i in range(n - n // 2)],
+            [1_000_000.0] * n,
+        )
 
         # GOOG passes
-        goog_closes = [30.0] * (n // 2) + [35.0 + i for i in range(n - n // 2)]
-        goog_volumes = [1_000_000.0] * n
+        goog_data = _make_stock_all_prices(
+            "GOOG", dates.tolist(),
+            [30.0] * (n // 2) + [35.0 + i for i in range(n - n // 2)],
+            [1_000_000.0] * n,
+        )
 
-        def load_prices_side_effect(tickers, start, end):
-            frames = {}
-            for t in tickers:
-                if t == "AAPL":
-                    frames[t] = _make_stock_prices(dates.tolist(), aapl_closes, aapl_volumes)
-                elif t == "MSFT":
-                    frames[t] = _make_stock_prices(dates.tolist(), msft_closes, msft_volumes)
-                elif t == "GOOG":
-                    frames[t] = _make_stock_prices(dates.tolist(), goog_closes, goog_volumes)
-                else:
-                    frames[t] = _passing_stock()
-            # Return concatenated with MultiIndex if multiple tickers
-            if len(frames) == 1:
-                return list(frames.values())[0]
-            parts = []
-            for t, df in frames.items():
-                df_copy = df.copy()
-                df_copy["ticker"] = t
-                df_copy = df_copy.set_index("ticker", append=True)
-                parts.append(df_copy)
-            return pd.concat(parts)
+        all_prices = pd.concat([aapl_data, msft_data, goog_data])
 
-        provider.load_prices.side_effect = load_prices_side_effect
-
-        result = apply_filters(["AAPL", "MSFT", "GOOG"], provider, as_of, config)
+        result = apply_filters(["AAPL", "MSFT", "GOOG"], all_prices, provider, as_of, config)
         assert result == ["AAPL", "GOOG"]  # MSFT filtered out, order preserved
 
 
@@ -300,5 +329,61 @@ class TestEmptyInput:
         as_of = date(2024, 6, 1)
         config = Config()
         provider = MagicMock()
-        result = apply_filters([], provider, as_of, config)
+        all_prices = pd.DataFrame()
+        result = apply_filters([], all_prices, provider, as_of, config)
         assert result == []
+
+
+class TestApplyFiltersUsesPreloadedPrices:
+    def test_filters_read_from_all_prices_not_provider(self):
+        """apply_filters must NOT call data_provider.load_prices for stock data."""
+        from clenow.config import Config
+        from clenow.portfolio.selector import apply_filters
+
+        as_of = date(2024, 6, 1)
+        config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+
+        provider = MagicMock()
+        provider.get_index_prices.return_value = pd.DataFrame(
+            {"raw_close": [100.0]},
+            index=pd.DatetimeIndex([as_of], name="date"),  # bull regime
+        )
+        # Force any accidental call to surface as a test failure:
+        provider.load_prices.side_effect = AssertionError(
+            "apply_filters must not query prices when all_prices is supplied"
+        )
+
+        # Build all_prices with a ticker that passes all filters
+        # Need >= 20 rows for ADV filter, and >= 5 for SMA
+        n = 25
+        dates = pd.date_range("2024-05-01", periods=n, freq="D")
+        # Rising prices so close > SMA (passes SMA filter)
+        closes = [10.0 - 1.0] * (n // 2) + [10.0 + i * 0.5 for i in range(n - n // 2)]
+        volumes = [1_000_000.0] * n  # ADV = 10 * 1M = $10M, passes
+
+        idx = pd.MultiIndex.from_tuples(
+            [(d, "AAA") for d in dates.tolist()],
+            names=["date", "ticker"],
+        )
+        all_prices = pd.DataFrame(
+            {
+                "raw_close": closes,
+                "raw_high": [c + 1.0 for c in closes],
+                "raw_low": [c - 1.0 for c in closes],
+                "volume": volumes,
+            },
+            index=idx,
+        )
+
+        result = apply_filters(
+            ranked_tickers=["AAA"],
+            all_prices=all_prices,
+            data_provider=provider,
+            as_of=as_of,
+            config=config,
+            current_positions=None,
+        )
+
+        assert result == ["AAA"]
+        provider.load_prices.assert_not_called()
+        provider.get_index_prices.assert_called_once()

@@ -7,6 +7,7 @@ from datetime import date
 import pandas as pd
 
 from clenow.config import Config
+from clenow.data.utils import get_ticker_series
 from clenow.types import Position
 
 
@@ -18,7 +19,15 @@ def _is_bear_regime(data_provider, as_of: date, config: Config) -> bool:
     if idx.empty:
         # No data → assume bull (don't block on missing data)
         return False
-    close_col = "raw_close" if "raw_close" in idx.columns else idx.columns[0]
+    # Handle different column names: raw_close, close, or first numeric column
+    if "raw_close" in idx.columns:
+        close_col = "raw_close"
+    elif "close" in idx.columns:
+        close_col = "close"
+    else:
+        # Find first numeric column
+        numeric_cols = idx.select_dtypes(include=["number"]).columns
+        close_col = numeric_cols[0] if len(numeric_cols) > 0 else idx.columns[0]
     closes = idx[close_col].sort_index()
     if len(closes) < config.regime_sma:
         return False
@@ -27,22 +36,11 @@ def _is_bear_regime(data_provider, as_of: date, config: Config) -> bool:
     return current < sma
 
 
-def _stock_fails_sma(
-    ticker: str, data_provider, as_of: date, config: Config
-) -> bool:
+def _stock_fails_sma(ticker_data: pd.DataFrame | None, config: Config) -> bool:
     """Return True if stock close < its 100-day SMA (fails filter)."""
-    lookback = config.stock_sma + 10
-    start = date(as_of.year - 1, as_of.month, as_of.day)
-    prices = data_provider.load_prices([ticker], start, as_of)
-    if prices.empty:
+    if ticker_data is None:
         return True  # no data → filter out
-    # Get the ticker's data — handle both MultiIndex and single-index
-    if isinstance(prices.index, pd.MultiIndex):
-        ticker_data = prices.xs(ticker, level=1, drop_level=True)
-    else:
-        ticker_data = prices
-    close_col = "raw_close"
-    closes = ticker_data[close_col].sort_index()
+    closes = ticker_data["raw_close"].dropna()
     if len(closes) < config.stock_sma:
         return True
     sma = closes.iloc[-config.stock_sma :].mean()
@@ -50,47 +48,28 @@ def _stock_fails_sma(
     return current < sma
 
 
-def _stock_fails_price(
-    ticker: str, data_provider, as_of: date, config: Config
-) -> bool:
+def _stock_fails_price(ticker_data: pd.DataFrame | None, config: Config) -> bool:
     """Return True if raw_close < min_price threshold."""
-    start = date(as_of.year - 1, as_of.month, as_of.day)
-    prices = data_provider.load_prices([ticker], start, as_of)
-    if prices.empty:
+    if ticker_data is None:
         return True
-    if isinstance(prices.index, pd.MultiIndex):
-        ticker_data = prices.xs(ticker, level=1, drop_level=True)
-    else:
-        ticker_data = prices
-    closes = ticker_data["raw_close"].sort_index()
+    closes = ticker_data["raw_close"].dropna()
     if closes.empty:
         return True
     return closes.iloc[-1] < config.min_price
 
 
-def _stock_fails_adv(
-    ticker: str, data_provider, as_of: date, config: Config
-) -> bool:
+def _stock_fails_adv(ticker_data: pd.DataFrame | None, config: Config) -> bool:
     """Return True if 20-day ADV < min_adv_dollars."""
-    start = date(as_of.year - 1, as_of.month, as_of.day)
-    prices = data_provider.load_prices([ticker], start, as_of)
-    if prices.empty:
-        return True
-    if isinstance(prices.index, pd.MultiIndex):
-        ticker_data = prices.xs(ticker, level=1, drop_level=True)
-    else:
-        ticker_data = prices
-    ticker_data = ticker_data.sort_index()
-    if len(ticker_data) < 20:
+    if ticker_data is None or len(ticker_data) < 20:
         return True
     recent = ticker_data.iloc[-20:]
     dollar_volume = recent["volume"] * recent["raw_close"]
-    adv = dollar_volume.mean()
-    return adv < config.min_adv_dollars
+    return dollar_volume.mean() < config.min_adv_dollars
 
 
 def apply_filters(
     ranked_tickers: list[str],
+    all_prices: pd.DataFrame,
     data_provider,
     as_of: date,
     config: Config,
@@ -106,7 +85,9 @@ def apply_filters(
 
     Args:
         ranked_tickers: tickers in rank order (highest first).
-        data_provider: DataProvider implementation.
+        all_prices: pre-loaded DataFrame with (date, ticker) MultiIndex containing
+            raw_close, raw_high, raw_low, volume columns for all universe tickers.
+        data_provider: DataProvider implementation (only used for regime filter).
         as_of: the date for point-in-time filtering.
         config: system configuration.
         current_positions: existing positions (used for regime filter).
@@ -126,16 +107,19 @@ def apply_filters(
         if bear and ticker not in existing:
             continue
 
+        # Extract ticker data from pre-loaded all_prices
+        ticker_data = get_ticker_series(all_prices, ticker)
+
         # Stock SMA filter
-        if _stock_fails_sma(ticker, data_provider, as_of, config):
+        if _stock_fails_sma(ticker_data, config):
             continue
 
         # Price filter
-        if _stock_fails_price(ticker, data_provider, as_of, config):
+        if _stock_fails_price(ticker_data, config):
             continue
 
         # ADV filter
-        if _stock_fails_adv(ticker, data_provider, as_of, config):
+        if _stock_fails_adv(ticker_data, config):
             continue
 
         result.append(ticker)
