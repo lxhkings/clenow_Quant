@@ -38,6 +38,11 @@ def generate_report(backtest_result, output_dir: str) -> str:
     trade_log_path = os.path.join(output_dir, "trades.csv")
     export_trade_log(trades, trade_log_path)
 
+    # Export equity curve
+    equity_path = os.path.join(output_dir, "equity_curve.csv")
+    if not equity_curve.empty:
+        equity_curve.to_csv(equity_path, index=False)
+
     # Build report
     lines = []
     lines.append("# Clenow Smooth Momentum — Backtest Report")
@@ -78,10 +83,7 @@ def generate_report(backtest_result, output_dir: str) -> str:
         lines.append(f"- **Final portfolio value**: ${final_value:,.2f}")
         lines.append(f"- **Total return**: {total_return:.2%}")
         lines.append("")
-        lines.append(
-            "*Equity curve data is available in the BacktestResult. "
-            "Chart generation requires matplotlib (not included).*"
-        )
+        lines.append(f"Equity curve data exported to: {equity_path}")
     else:
         lines.append("No equity curve data available.")
     lines.append("")
