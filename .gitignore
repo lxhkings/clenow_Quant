@@ -8,3 +8,10 @@ dist/
 build/
 .clenow/
 .venv/
+# Backtest output
+output/
+output_before/
+_perf_*.txt
+
+# macOS
+.DS_Store
