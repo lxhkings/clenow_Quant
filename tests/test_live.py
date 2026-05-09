@@ -62,13 +62,13 @@ class TestSaveAndLoadState:
     def test_backup_created(self, tracker_with_positions, tmp_state_path):
         save_state(tracker_with_positions, tmp_state_path)
         save_state(tracker_with_positions, tmp_state_path)
-        # portfolio/state.save_state uses with_suffix(suffix + ".bak") → positions.json.bak
-        bak_path = Path(str(tmp_state_path) + ".bak")
+        # portfolio/state.save_state uses with_suffix(".bak") → positions.bak
+        bak_path = tmp_state_path.with_suffix(".bak")
         assert bak_path.exists()
 
     def test_no_tmp_left_after_save(self, tracker_with_positions, tmp_state_path):
         save_state(tracker_with_positions, tmp_state_path)
-        tmp_file = Path(str(tmp_state_path) + ".tmp")
+        tmp_file = tmp_state_path.with_suffix(".tmp")
         assert not tmp_file.exists()
 
 
