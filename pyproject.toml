@@ -1,0 +1,28 @@
+[project]
+name = "clenow"
+version = "0.1.0"
+description = "Clenow Smooth Momentum quantitative backtesting system"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas_market_calendars>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=clenow --cov-report=term-missing -v"
+markers = [
+    "integration: integration tests requiring database",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

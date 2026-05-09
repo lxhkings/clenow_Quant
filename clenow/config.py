@@ -1,0 +1,35 @@
+"""Configuration parameters for the Clenow system."""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Config:
+    # Score / Signal parameters
+    score_window: int = 90
+    atr_period: int = 20
+    gap_threshold: float = 0.15
+
+    # Regime / Entry filters
+    regime_sma: int = 200
+    stock_sma: int = 100
+    min_price: float = 5.0
+    min_adv_dollars: float = 10_000_000
+
+    # Ranking
+    top_pct: float = 0.20
+
+    # Sizing / Risk
+    risk_factor: float = 0.001
+    max_position_pct: float = 0.05
+
+    # Cost model
+    half_spread_bps: float = 5.0
+    slippage_bps_per_pct_adv: float = 5.0
+    slippage_bps_min: float = 1.0
+    slippage_bps_max: float = 30.0
+    commission_per_share: float = 0.0
+
+    # Rebalancing
+    rebalance_freq: str = "weekly"  # "weekly" | "biweekly"
+    rebalance_dow: int = 0  # 0 = Monday open
