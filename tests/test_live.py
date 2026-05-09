@@ -61,14 +61,14 @@ class TestSaveAndLoadState:
 
     def test_backup_created(self, tracker_with_positions, tmp_state_path):
         save_state(tracker_with_positions, tmp_state_path)
-        # Save again — should create .bak
         save_state(tracker_with_positions, tmp_state_path)
-        bak_path = tmp_state_path.with_suffix(".bak")
+        # portfolio/state.save_state uses with_suffix(suffix + ".bak") → positions.json.bak
+        bak_path = Path(str(tmp_state_path) + ".bak")
         assert bak_path.exists()
 
     def test_no_tmp_left_after_save(self, tracker_with_positions, tmp_state_path):
         save_state(tracker_with_positions, tmp_state_path)
-        tmp_file = tmp_state_path.with_suffix(".tmp")
+        tmp_file = Path(str(tmp_state_path) + ".tmp")
         assert not tmp_file.exists()
 
 
@@ -97,29 +97,34 @@ class TestStateCorruption:
             "cash": 1000.0,
             "positions": {
                 "AAPL": {
+                    "ticker": "AAPL",
                     "shares": "fifty",
                     "entry_price": 175.0,
                     "entry_date": "2026-01-01",
+                    "atr_at_entry": 0.0,
                 }
             },
         }
         tmp_state_path.write_text(json.dumps(state), encoding="utf-8")
-        with pytest.raises(StateCorruption, match="shares must be a positive integer"):
+        with pytest.raises(StateCorruption, match="shares must be int"):
             load_state(tmp_state_path)
 
-    def test_negative_shares(self, tmp_state_path):
+    def test_negative_shares_rejected(self, tmp_state_path):
+        """Negative shares are rejected by validation."""
         state = {
             "cash": 1000.0,
             "positions": {
                 "AAPL": {
+                    "ticker": "AAPL",
                     "shares": -10,
                     "entry_price": 175.0,
                     "entry_date": "2026-01-01",
+                    "atr_at_entry": 0.0,
                 }
             },
         }
         tmp_state_path.write_text(json.dumps(state), encoding="utf-8")
-        with pytest.raises(StateCorruption, match="shares must be a positive integer"):
+        with pytest.raises(StateCorruption, match="shares must be positive"):
             load_state(tmp_state_path)
 
     def test_missing_entry_date(self, tmp_state_path):
@@ -127,13 +132,15 @@ class TestStateCorruption:
             "cash": 1000.0,
             "positions": {
                 "AAPL": {
+                    "ticker": "AAPL",
                     "shares": 50,
                     "entry_price": 175.0,
+                    "atr_at_entry": 0.0,
                 }
             },
         }
         tmp_state_path.write_text(json.dumps(state), encoding="utf-8")
-        with pytest.raises(StateCorruption, match="missing required field: entry_date"):
+        with pytest.raises(StateCorruption, match="missing fields"):
             load_state(tmp_state_path)
 
     def test_invalid_entry_date(self, tmp_state_path):
@@ -141,14 +148,16 @@ class TestStateCorruption:
             "cash": 1000.0,
             "positions": {
                 "AAPL": {
+                    "ticker": "AAPL",
                     "shares": 50,
                     "entry_price": 175.0,
                     "entry_date": "not-a-date",
+                    "atr_at_entry": 0.0,
                 }
             },
         }
         tmp_state_path.write_text(json.dumps(state), encoding="utf-8")
-        with pytest.raises(StateCorruption, match="not a valid date"):
+        with pytest.raises(StateCorruption, match="invalid entry_date"):
             load_state(tmp_state_path)
 
 

@@ -228,6 +228,9 @@ def _validate_state_dict(state: dict, path: str) -> None:
         if not isinstance(pos_data["shares"], int):
             raise StateCorruption(path, f"Position '{ticker}' shares must be int, got {type(pos_data['shares']).__name__}")
 
+        if isinstance(pos_data["shares"], int) and pos_data["shares"] <= 0:
+            raise StateCorruption(path, f"Position '{ticker}' shares must be positive, got {pos_data['shares']}")
+
         if not isinstance(pos_data["entry_price"], (int, float)):
             raise StateCorruption(path, f"Position '{ticker}' entry_price must be numeric")
 
@@ -247,8 +250,8 @@ def save_state(tracker: PositionTracker, path: str | Path) -> None:
     Keeps a .bak backup of the previous version if it exists.
     """
     path = Path(path)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    bak_path = path.with_suffix(path.suffix + ".bak")
+    tmp_path = path.with_suffix(".tmp")
+    bak_path = path.with_suffix(".bak")
 
     json_str = tracker.to_json()
 
@@ -271,7 +274,7 @@ def load_state(path: str | Path) -> PositionTracker:
     Falls back to .bak if the primary file is missing or corrupt.
     """
     path = Path(path)
-    bak_path = path.with_suffix(path.suffix + ".bak")
+    bak_path = path.with_suffix(".bak")
 
     # Try primary file first
     for candidate, label in [(path, str(path)), (bak_path, str(bak_path))]:
