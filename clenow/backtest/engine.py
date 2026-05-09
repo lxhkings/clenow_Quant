@@ -32,6 +32,7 @@ from clenow.backtest.executor import SimulatedExecutor
 from clenow.backtest.rebalance import get_rebalance_dates
 from clenow.config import Config
 from clenow.data.provider import DataProvider
+from clenow.data.utils import get_ticker_series as _get_ticker_series
 from clenow.errors import OrderRejection
 from clenow.portfolio.ranker import rank_by_score
 from clenow.portfolio.selector import apply_filters
@@ -58,27 +59,6 @@ class BacktestResult:
     final_positions: dict[str, Position]
     final_cash: float
     config: Config
-
-
-def _get_ticker_series(
-    prices: pd.DataFrame, ticker: str
-) -> pd.DataFrame | None:
-    """Extract a single ticker's data from a MultiIndex DataFrame.
-
-    Returns None if the ticker is not present or data is empty.
-    """
-    if prices.empty:
-        return None
-    try:
-        if isinstance(prices.index, pd.MultiIndex):
-            ticker_data = prices.xs(ticker, level=1, drop_level=True)
-        else:
-            ticker_data = prices
-        if ticker_data.empty:
-            return None
-        return ticker_data.sort_index()
-    except KeyError:
-        return None
 
 
 def _check_sma_break(
@@ -431,8 +411,101 @@ def run_backtest(
             tracker, data_provider, signal_date, execution_date
         )
 
-    # Step 3: Build daily equity curve
-    equity_records = _build_equity_curve(tracker, data_provider, start, end)
+    # Step 3: Build equity curve incrementally during backtest
+    equity_records: list[dict] = []
+
+    # Record initial state
+    equity_records.append({
+        "date": start,
+        "portfolio_value": initial_cash,
+        "cash": initial_cash,
+    })
+
+    # Re-run the rebalance loop to track equity at each execution date
+    # This is a simplified approach - we record equity after each rebalance
+    tracker2 = PositionTracker(cash=initial_cash)
+    entry_info2: dict[str, dict] = {}
+
+    for signal_date, execution_date in rebalance_pairs:
+        _detect_delistings(tracker2, data_provider, signal_date)
+
+        current_positions = tracker2.get_positions()
+        current_cash = tracker2.get_cash()
+
+        target = compute_target_portfolio(
+            as_of=signal_date,
+            current_positions=current_positions,
+            current_cash=current_cash,
+            config=config,
+            data_provider=data_provider,
+        )
+
+        orders = _compute_diff(current_positions, target, execution_date)
+
+        if orders:
+            order_tickers = list({o.ticker for o in orders})
+            exec_prices = data_provider.load_prices(
+                order_tickers, execution_date, execution_date
+            )
+
+            executor = SimulatedExecutor(price_data=exec_prices, adv_data=adv_data)
+
+            sells = [o for o in orders if o.side == Side.SELL]
+            buys = [o for o in orders if o.side == Side.BUY]
+
+            for order in sells:
+                try:
+                    fills = executor.submit([order], config)
+                    tracker2.apply_fills(fills)
+                    if order.ticker in current_positions and order.ticker not in target.positions:
+                        if order.ticker in entry_info2:
+                            entry_info2.pop(order.ticker)
+                except OrderRejection:
+                    pass
+
+            for order in buys:
+                try:
+                    fills = executor.submit([order], config)
+                    tracker2.apply_fills(fills)
+                    fill = fills[0]
+                    if order.ticker not in current_positions:
+                        entry_info2[order.ticker] = {
+                            "entry_date": execution_date,
+                            "entry_price": fill.fill_price,
+                            "shares": fill.fill_price,
+                        }
+                    else:
+                        if order.ticker in entry_info2:
+                            entry_info2[order.ticker]["shares"] += fill.shares
+                except OrderRejection:
+                    pass
+
+        _apply_corporate_actions(tracker2, data_provider, signal_date, execution_date)
+
+        # Record equity at execution date
+        positions_now = tracker2.get_positions()
+        if positions_now:
+            tickers_now = list(positions_now.keys())
+            price_data = data_provider.load_prices(tickers_now, execution_date, execution_date)
+            day_prices: dict[str, float] = {}
+            if not price_data.empty:
+                if isinstance(price_data.index, pd.MultiIndex):
+                    try:
+                        day_data = price_data.xs(execution_date, level=0)
+                        for t in day_data.index:
+                            if "raw_close" in day_data.columns:
+                                day_prices[t] = float(day_data.loc[t, "raw_close"])
+                    except (KeyError, TypeError):
+                        pass
+            equity = tracker2.get_equity(day_prices)
+        else:
+            equity = tracker2.get_cash()
+
+        equity_records.append({
+            "date": execution_date,
+            "portfolio_value": equity,
+            "cash": tracker2.get_cash(),
+        })
 
     equity_df = pd.DataFrame(equity_records)
     if equity_df.empty:
