@@ -220,3 +220,39 @@ class ParquetCache:
 
         if touched:
             self._update_manifest_entries(sorted(touched))
+
+    # ------------------------------------------------------------------
+    # DuckDB read path
+    # ------------------------------------------------------------------
+
+    def _query_via_duckdb(
+        self, tickers: list[str], start: date, end: date
+    ) -> pd.DataFrame:
+        """Single DuckDB SQL across per-ticker files. Returns flat DataFrame."""
+        import duckdb
+
+        empty = pd.DataFrame(columns=["date", "ticker", *PRICE_COLUMNS])
+        files = sorted(self.parquet_dir.glob("*.parquet"))
+        if not files:
+            return empty
+
+        glob = str(self.parquet_dir / "*.parquet")
+        cols = ", ".join(PRICE_COLUMNS)
+        sql = f"""
+            SELECT date, ticker, {cols}
+            FROM read_parquet(?)
+            WHERE ticker IN (SELECT UNNEST(?))
+              AND date BETWEEN ? AND ?
+            ORDER BY date, ticker
+        """
+        con = duckdb.connect(":memory:")
+        try:
+            df = con.execute(sql, [glob, list(tickers), start, end]).df()
+        finally:
+            con.close()
+
+        if df.empty:
+            return empty
+        # DuckDB returns date as np.datetime64; coerce back to python date for parity with DB path
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        return df

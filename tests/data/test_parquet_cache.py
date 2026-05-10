@@ -272,3 +272,46 @@ class TestFetchAndPersist:
         # Manifest should not have AAPL entry
         manifest = cache._read_manifest()
         assert len(manifest) == 0
+
+
+class TestQueryViaDuckDB:
+    def _seed(self, cache, ticker, dates):
+        cache._write_ticker_atomic(ticker, _ticker_rows(ticker, dates))
+
+    def test_returns_only_requested_tickers(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        self._seed(cache, "AAPL", [date(2024, 1, 2), date(2024, 1, 3)])
+        self._seed(cache, "MSFT", [date(2024, 1, 2), date(2024, 1, 3)])
+        self._seed(cache, "GOOG", [date(2024, 1, 2), date(2024, 1, 3)])
+
+        df = cache._query_via_duckdb(
+            ["AAPL", "MSFT"], date(2024, 1, 1), date(2024, 1, 31)
+        )
+        assert sorted(df["ticker"].unique()) == ["AAPL", "MSFT"]
+
+    def test_returns_only_requested_dates(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        self._seed(
+            cache, "AAPL",
+            [date(2024, 1, 2), date(2024, 1, 3), date(2024, 2, 1)],
+        )
+        df = cache._query_via_duckdb(
+            ["AAPL"], date(2024, 1, 1), date(2024, 1, 31)
+        )
+        assert sorted(df["date"].tolist()) == [date(2024, 1, 2), date(2024, 1, 3)]
+
+    def test_empty_when_cache_dir_empty(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        df = cache._query_via_duckdb(
+            ["AAPL"], date(2024, 1, 1), date(2024, 1, 31)
+        )
+        assert df.empty
+        assert list(df.columns) == ["date", "ticker", *PRICE_COLUMNS]
+
+    def test_columns_match_schema(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        self._seed(cache, "AAPL", [date(2024, 1, 2)])
+        df = cache._query_via_duckdb(
+            ["AAPL"], date(2024, 1, 1), date(2024, 1, 31)
+        )
+        assert list(df.columns) == ["date", "ticker", *PRICE_COLUMNS]
