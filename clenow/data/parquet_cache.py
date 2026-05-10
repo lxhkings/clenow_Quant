@@ -13,6 +13,7 @@ detect coverage gaps without scanning every file.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -114,3 +115,33 @@ class ParquetCache:
             if ticker_gaps:
                 gaps[ticker] = ticker_gaps
         return gaps
+
+    # ------------------------------------------------------------------
+    # Per-ticker file write (atomic)
+    # ------------------------------------------------------------------
+
+    def _ticker_path(self, ticker: str) -> Path:
+        return self.parquet_dir / f"{ticker}.parquet"
+
+    def _write_ticker_atomic(self, ticker: str, new_rows: pd.DataFrame) -> None:
+        """Merge new_rows into the per-ticker file. Atomic via temp+rename."""
+        if new_rows.empty:
+            return
+        path = self._ticker_path(ticker)
+        if path.exists():
+            existing = pd.read_parquet(path)
+            combined = pd.concat([existing, new_rows], ignore_index=True)
+        else:
+            combined = new_rows.copy()
+        combined = (
+            combined.drop_duplicates(subset=["date"], keep="last")
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        tmp = path.with_suffix(".parquet.tmp")
+        try:
+            combined.to_parquet(tmp, index=False)
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)

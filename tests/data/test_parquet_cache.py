@@ -19,6 +19,21 @@ def _stub_fetcher_empty(tickers, start, end):
     return pd.DataFrame(columns=["date", "ticker", *PRICE_COLUMNS])
 
 
+def _ticker_rows(ticker: str, dates: list[date]) -> pd.DataFrame:
+    return pd.DataFrame({
+        "date": dates,
+        "ticker": [ticker] * len(dates),
+        "raw_open": [100.0] * len(dates),
+        "raw_high": [101.0] * len(dates),
+        "raw_low": [99.0] * len(dates),
+        "raw_close": [100.5] * len(dates),
+        "volume": [1_000_000] * len(dates),
+        "adj_close": [100.5] * len(dates),
+        "dividend": [0.0] * len(dates),
+        "split_ratio": [1.0] * len(dates),
+    })
+
+
 class TestManifestReadEmpty:
     def test_returns_empty_dataframe_when_no_manifest(self, tmp_path: Path) -> None:
         cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
@@ -102,3 +117,33 @@ class TestIdentifyGaps:
         assert "AAPL" not in gaps  # fully covered
         assert gaps["MSFT"] == [(date(2024, 1, 1), date(2024, 5, 31))]
         assert gaps["GOOG"] == [(date(2024, 1, 1), date(2024, 12, 31))]
+
+
+class TestWriteTickerAtomic:
+    def test_creates_new_file(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        rows = _ticker_rows("AAPL", [date(2024, 1, 2), date(2024, 1, 3)])
+        cache._write_ticker_atomic("AAPL", rows)
+        path = tmp_path / "parquet" / "AAPL.parquet"
+        assert path.exists()
+        out = pd.read_parquet(path)
+        assert len(out) == 2
+        assert set(out.columns) == {"date", "ticker", *PRICE_COLUMNS}
+
+    def test_appends_and_dedupes_by_date(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        first = _ticker_rows("AAPL", [date(2024, 1, 2), date(2024, 1, 3)])
+        second = _ticker_rows("AAPL", [date(2024, 1, 3), date(2024, 1, 4)])  # 1/3 overlaps
+        cache._write_ticker_atomic("AAPL", first)
+        cache._write_ticker_atomic("AAPL", second)
+        out = pd.read_parquet(tmp_path / "parquet" / "AAPL.parquet")
+        assert sorted(out["date"].tolist()) == [
+            date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)
+        ]
+
+    def test_no_temp_file_left_behind(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        rows = _ticker_rows("AAPL", [date(2024, 1, 2)])
+        cache._write_ticker_atomic("AAPL", rows)
+        leftover = list((tmp_path / "parquet").glob("*.tmp"))
+        assert leftover == []
