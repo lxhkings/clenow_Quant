@@ -147,3 +147,48 @@ class TestWriteTickerAtomic:
         cache._write_ticker_atomic("AAPL", rows)
         leftover = list((tmp_path / "parquet").glob("*.tmp"))
         assert leftover == []
+
+
+class TestUpdateManifestEntries:
+    def test_creates_manifest_on_first_write(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        cache._write_ticker_atomic(
+            "AAPL", _ticker_rows("AAPL", [date(2024, 1, 2), date(2024, 1, 3)])
+        )
+        cache._update_manifest_entries(["AAPL"])
+        manifest = cache._read_manifest()
+        assert len(manifest) == 1
+        row = manifest.iloc[0]
+        assert row["ticker"] == "AAPL"
+        assert row["min_date"] == date(2024, 1, 2)
+        assert row["max_date"] == date(2024, 1, 3)
+        assert row["row_count"] == 2
+
+    def test_updates_existing_entry(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        cache._write_ticker_atomic(
+            "AAPL", _ticker_rows("AAPL", [date(2024, 1, 2)])
+        )
+        cache._update_manifest_entries(["AAPL"])
+        cache._write_ticker_atomic(
+            "AAPL", _ticker_rows("AAPL", [date(2024, 1, 3), date(2024, 1, 4)])
+        )
+        cache._update_manifest_entries(["AAPL"])
+        manifest = cache._read_manifest()
+        row = manifest.iloc[0]
+        assert row["min_date"] == date(2024, 1, 2)
+        assert row["max_date"] == date(2024, 1, 4)
+        assert row["row_count"] == 3
+
+    def test_multiple_tickers(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        cache._write_ticker_atomic(
+            "AAPL", _ticker_rows("AAPL", [date(2024, 1, 2)])
+        )
+        cache._write_ticker_atomic(
+            "MSFT", _ticker_rows("MSFT", [date(2024, 1, 3), date(2024, 1, 4)])
+        )
+        cache._update_manifest_entries(["AAPL", "MSFT"])
+        manifest = cache._read_manifest().set_index("ticker")
+        assert manifest.loc["AAPL", "min_date"] == date(2024, 1, 2)
+        assert manifest.loc["MSFT", "max_date"] == date(2024, 1, 4)

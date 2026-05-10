@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -142,6 +142,45 @@ class ParquetCache:
         try:
             combined.to_parquet(tmp, index=False)
             os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+
+    def _update_manifest_entries(self, tickers: list[str]) -> None:
+        """Recompute manifest rows for `tickers` from their on-disk files."""
+        if not tickers:
+            return
+        manifest = self._read_manifest()
+        # Drop existing rows for tickers we're about to refresh
+        manifest = manifest[~manifest["ticker"].isin(tickers)]
+
+        new_rows = []
+        now = datetime.now(UTC)
+        for ticker in tickers:
+            path = self._ticker_path(ticker)
+            if not path.exists():
+                logger.warning("Ticker %s parquet file missing; skipping manifest update", ticker)
+                continue
+            df = pd.read_parquet(path, columns=["date"])
+            if df.empty:
+                logger.warning("Ticker %s parquet file empty; skipping manifest update", ticker)
+                continue
+            new_rows.append({
+                "ticker": ticker,
+                "min_date": df["date"].min(),
+                "max_date": df["date"].max(),
+                "row_count": int(len(df)),
+                "updated_at": now,
+            })
+        if new_rows:
+            additions = pd.DataFrame(new_rows, columns=MANIFEST_COLUMNS)
+            manifest = pd.concat([manifest, additions], ignore_index=True)
+
+        # Atomic write of manifest
+        tmp = self.manifest_path.with_suffix(".parquet.tmp")
+        try:
+            manifest.to_parquet(tmp, index=False)
+            os.replace(tmp, self.manifest_path)
         finally:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
