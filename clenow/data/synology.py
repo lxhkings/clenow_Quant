@@ -102,6 +102,26 @@ class SynologyDataProvider:
             if cached is not None:
                 return cached
 
+        flat = self._query_prices_from_db(tickers, start, end)
+        if flat.empty:
+            return self._empty_prices_frame()
+
+        result = flat.set_index(["date", "ticker"]).sort_index()
+
+        if self._use_cache:
+            save_to_cache(result, tickers, start, end)
+
+        return result
+
+    def _query_prices_from_db(
+        self, tickers: list[str], start: date, end: date
+    ) -> pd.DataFrame:
+        """Pure MariaDB read. Returns flat DataFrame with columns:
+        date, ticker, raw_open, raw_high, raw_low, raw_close,
+        volume, adj_close, dividend, split_ratio. No index set.
+        Empty result returns an empty DataFrame with the same schema (no MultiIndex).
+        """
+        self._ensure_connection()
         placeholders = ",".join(["%s"] * len(tickers))
         query = f"""
             SELECT date, ticker, `open`, `high`, `low`, `close`, volume
@@ -119,35 +139,23 @@ class SynologyDataProvider:
             raise DataAccessError(f"Failed to load prices: {exc}") from exc
 
         if df.empty:
-            return self._empty_prices_frame()
+            return pd.DataFrame(columns=[
+                "date", "ticker", "raw_open", "raw_high", "raw_low",
+                "raw_close", "volume", "adj_close", "dividend", "split_ratio",
+            ])
 
-        # Parse dates
         df["date"] = pd.to_datetime(df["date"]).dt.date
-
-        # Map column names: open → raw_open, etc.
         df = df.rename(columns={
-            "open": "raw_open",
-            "high": "raw_high",
-            "low": "raw_low",
-            "close": "raw_close",
+            "open": "raw_open", "high": "raw_high",
+            "low": "raw_low", "close": "raw_close",
         })
-
-        # NAS database has no adj_close, dividend, split_ratio
-        # Use raw_close as adj_close (no adjustment)
         df["adj_close"] = df["raw_close"]
         df["dividend"] = 0.0
         df["split_ratio"] = 1.0
-
-        df = df.set_index(["date", "ticker"])
-        result = df[
-            ["raw_open", "raw_high", "raw_low", "raw_close",
-             "volume", "adj_close", "dividend", "split_ratio"]
-        ]
-
-        if self._use_cache:
-            save_to_cache(result, tickers, start, end)
-
-        return result
+        return df[[
+            "date", "ticker", "raw_open", "raw_high", "raw_low",
+            "raw_close", "volume", "adj_close", "dividend", "split_ratio",
+        ]]
 
     def get_universe(self, as_of: date) -> list[str]:
         """Return available stocks as of as_of.
