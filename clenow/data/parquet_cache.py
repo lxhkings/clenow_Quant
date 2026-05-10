@@ -287,6 +287,13 @@ class ParquetCache:
     # Public entry point
     # ------------------------------------------------------------------
 
+    def rebuild_manifest(self) -> None:
+        """Scan all per-ticker files and rewrite the manifest from scratch."""
+        if self.manifest_path.exists():
+            self.manifest_path.unlink()
+        all_tickers = [p.stem for p in self.parquet_dir.glob("*.parquet")]
+        self._update_manifest_entries(sorted(all_tickers))
+
     def load(
         self, tickers: list[str], start: date, end: date
     ) -> pd.DataFrame:

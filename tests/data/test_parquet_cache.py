@@ -387,3 +387,23 @@ class TestLoadEndToEnd:
         df = cache.load([], date(2024, 1, 1), date(2024, 1, 31))
         assert df.empty
         assert df.index.names == ["date", "ticker"]
+
+
+class TestRebuildManifest:
+    def test_rebuilds_from_files_after_manifest_lost(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        cache._write_ticker_atomic(
+            "AAPL", _ticker_rows("AAPL", [date(2024, 1, 2), date(2024, 1, 3)])
+        )
+        cache._write_ticker_atomic(
+            "MSFT", _ticker_rows("MSFT", [date(2024, 1, 2)])
+        )
+        cache._update_manifest_entries(["AAPL", "MSFT"])
+
+        # Simulate manifest loss
+        cache.manifest_path.unlink()
+        assert not cache.manifest_path.exists()
+
+        cache.rebuild_manifest()
+        manifest = cache._read_manifest()
+        assert sorted(manifest["ticker"].tolist()) == ["AAPL", "MSFT"]
