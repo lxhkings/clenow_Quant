@@ -70,3 +70,47 @@ class ParquetCache:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col]).dt.date
         return df
+
+    # ------------------------------------------------------------------
+    # Gap analysis
+    # ------------------------------------------------------------------
+
+    def _identify_gaps(
+        self,
+        manifest: pd.DataFrame,
+        tickers: list[str],
+        start: date,
+        end: date,
+    ) -> dict[str, list[tuple[date, date]]]:
+        """Return ``{ticker: [(gap_start, gap_end), ...]}`` for missing slices.
+
+        A ticker maps to:
+            - one gap (start, end) if absent from manifest
+            - one gap (start, min_date - 1) if manifest starts after `start`
+            - one gap (max_date + 1, end) if manifest ends before `end`
+            - both if request straddles both ends
+            - omitted entirely if manifest fully covers [start, end]
+        """
+        from datetime import timedelta
+
+        gaps: dict[str, list[tuple[date, date]]] = {}
+        index = (
+            manifest.set_index("ticker")
+            if not manifest.empty
+            else pd.DataFrame(columns=MANIFEST_COLUMNS).set_index("ticker")
+        )
+        for ticker in tickers:
+            if ticker not in index.index:
+                gaps[ticker] = [(start, end)]
+                continue
+            row = index.loc[ticker]
+            min_d = row["min_date"]
+            max_d = row["max_date"]
+            ticker_gaps: list[tuple[date, date]] = []
+            if start < min_d:
+                ticker_gaps.append((start, min_d - timedelta(days=1)))
+            if end > max_d:
+                ticker_gaps.append((max_d + timedelta(days=1), end))
+            if ticker_gaps:
+                gaps[ticker] = ticker_gaps
+        return gaps
