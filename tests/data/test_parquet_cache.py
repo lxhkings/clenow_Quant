@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -407,3 +407,28 @@ class TestRebuildManifest:
         cache.rebuild_manifest()
         manifest = cache._read_manifest()
         assert sorted(manifest["ticker"].tolist()) == ["AAPL", "MSFT"]
+
+
+class TestCacheReuseAcrossRuns:
+    def test_second_run_skips_db_and_matches_first(self, tmp_path):
+        call_count = {"n": 0}
+        def fetcher(tickers, start, end):
+            call_count["n"] += 1
+            rows = []
+            for t in tickers:
+                # produce 5 deterministic bars
+                dates = [start + timedelta(days=i) for i in range(5)
+                         if (start + timedelta(days=i)) <= end]
+                rows.append(_ticker_rows(t, dates))
+            return pd.concat(rows, ignore_index=True) if rows else \
+                pd.DataFrame(columns=["date", "ticker", *PRICE_COLUMNS])
+
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+
+        first = cache.load(["AAPL", "MSFT"], date(2024, 1, 1), date(2024, 1, 4))
+        n1 = call_count["n"]
+        second = cache.load(["AAPL", "MSFT"], date(2024, 1, 1), date(2024, 1, 4))
+        n2 = call_count["n"]
+
+        assert n2 == n1   # warm load did not invoke fetcher again
+        pd.testing.assert_frame_equal(first, second)
