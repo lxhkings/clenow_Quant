@@ -192,3 +192,83 @@ class TestUpdateManifestEntries:
         manifest = cache._read_manifest().set_index("ticker")
         assert manifest.loc["AAPL", "min_date"] == date(2024, 1, 2)
         assert manifest.loc["MSFT", "max_date"] == date(2024, 1, 4)
+
+
+class TestFetchAndPersist:
+    def test_no_gaps_no_fetch(self, tmp_path):
+        calls = []
+        def fetcher(tickers, start, end):
+            calls.append((sorted(tickers), start, end))
+            return _ticker_rows(tickers[0], [start])
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        cache._fetch_and_persist({})
+        assert calls == []
+
+    def test_groups_by_date_range(self, tmp_path):
+        calls = []
+        def fetcher(tickers, start, end):
+            calls.append((sorted(tickers), start, end))
+            rows = []
+            for t in tickers:
+                rows.append(_ticker_rows(t, [start, end]))
+            return pd.concat(rows, ignore_index=True)
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        gaps = {
+            "AAPL": [(date(2024, 1, 1), date(2024, 1, 31))],
+            "MSFT": [(date(2024, 1, 1), date(2024, 1, 31))],   # same range as AAPL
+            "GOOG": [(date(2024, 2, 1), date(2024, 2, 28))],   # different range
+        }
+        cache._fetch_and_persist(gaps)
+        # Two unique date ranges → two fetcher calls
+        assert len(calls) == 2
+        # AAPL+MSFT share one call
+        first_call_tickers = next(c[0] for c in calls if c[1] == date(2024, 1, 1))
+        assert first_call_tickers == ["AAPL", "MSFT"]
+        # GOOG alone
+        third_call_tickers = next(c[0] for c in calls if c[1] == date(2024, 2, 1))
+        assert third_call_tickers == ["GOOG"]
+
+    def test_multi_gap_per_ticker_dispatches_separately(self, tmp_path):
+        calls = []
+        def fetcher(tickers, start, end):
+            calls.append((sorted(tickers), start, end))
+            return pd.concat(
+                [_ticker_rows(t, [start, end]) for t in tickers],
+                ignore_index=True,
+            )
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        gaps = {
+            "AAPL": [
+                (date(2024, 1, 1), date(2024, 1, 31)),
+                (date(2024, 6, 1), date(2024, 6, 30)),
+            ],
+        }
+        cache._fetch_and_persist(gaps)
+        assert len(calls) == 2
+
+    def test_persists_files_and_manifest(self, tmp_path):
+        def fetcher(tickers, start, end):
+            return pd.concat(
+                [_ticker_rows(t, [start, end]) for t in tickers],
+                ignore_index=True,
+            )
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        cache._fetch_and_persist({
+            "AAPL": [(date(2024, 1, 2), date(2024, 1, 5))],
+        })
+        assert (tmp_path / "parquet" / "AAPL.parquet").exists()
+        manifest = cache._read_manifest()
+        assert manifest.iloc[0]["ticker"] == "AAPL"
+        assert manifest.iloc[0]["row_count"] == 2  # _ticker_rows yields exactly 2 dates
+
+    def test_handles_empty_fetcher_response(self, tmp_path):
+        """Fetcher returns empty DataFrame - should log warning, no file created."""
+        def fetcher(tickers, start, end):
+            return pd.DataFrame(columns=["date", "ticker", *PRICE_COLUMNS])  # empty
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        cache._fetch_and_persist({"AAPL": [(date(2024, 1, 1), date(2024, 1, 31))]})
+        # No parquet file should be created
+        assert not (tmp_path / "parquet" / "AAPL.parquet").exists()
+        # Manifest should not have AAPL entry
+        manifest = cache._read_manifest()
+        assert len(manifest) == 0

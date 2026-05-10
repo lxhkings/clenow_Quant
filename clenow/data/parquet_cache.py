@@ -184,3 +184,39 @@ class ParquetCache:
         finally:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------
+    # Fetch + persist orchestration
+    # ------------------------------------------------------------------
+
+    def _fetch_and_persist(
+        self, gaps: dict[str, list[tuple[date, date]]]
+    ) -> None:
+        """Group gaps by (start, end), call db_fetcher once per range,
+        write per-ticker files, then refresh manifest entries.
+        """
+        if not gaps:
+            return
+
+        # Build {(start, end): [tickers]}
+        batches: dict[tuple[date, date], list[str]] = {}
+        for ticker, ranges in gaps.items():
+            for rng in ranges:
+                batches.setdefault(rng, []).append(ticker)
+
+        touched: set[str] = set()
+        for (start, end), tickers in batches.items():
+            tickers_sorted = sorted(tickers)
+            df = self.db_fetcher(tickers_sorted, start, end)
+            if df is None or df.empty:
+                logger.warning(
+                    "db_fetcher returned no rows for %d tickers %s..%s",
+                    len(tickers_sorted), start, end,
+                )
+                continue
+            for ticker, slice_df in df.groupby("ticker", sort=False):
+                self._write_ticker_atomic(str(ticker), slice_df)
+                touched.add(str(ticker))
+
+        if touched:
+            self._update_manifest_entries(sorted(touched))
