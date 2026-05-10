@@ -50,6 +50,52 @@ _PRICE_LOOKBACK_DAYS = 300
 _PRICE_LOOKBACK_CALENDAR = timedelta(days=450)
 
 
+def _select_one_per_sector(
+    scores: dict[str, float],
+    sector_mapping: dict[str, str],
+) -> list[str]:
+    """Select highest-score stock from each sector.
+
+    Args:
+        scores: ticker -> Clenow score mapping.
+        sector_mapping: ticker -> sector mapping.
+
+    Returns:
+        List of tickers (one per sector) sorted by score descending.
+    """
+    # Group by sector
+    by_sector: dict[str, list[tuple[str, float]]] = {}
+    unmapped = []
+    for ticker, score in scores.items():
+        if score <= 0:
+            continue
+        sector = sector_mapping.get(ticker)
+        if sector:
+            if sector not in by_sector:
+                by_sector[sector] = []
+            by_sector[sector].append((ticker, score))
+        else:
+            unmapped.append(ticker)
+
+    if unmapped:
+        logger.warning(
+            "%d tickers with positive score not in sector_mapping (excluded): %s...",
+            len(unmapped),
+            ", ".join(unmapped[:10]),
+        )
+
+    # Pick highest score per sector
+    selected: list[tuple[str, float]] = []
+    for sector, tickers in by_sector.items():
+        sorted_tickers = sorted(tickers, key=lambda x: x[1], reverse=True)
+        if sorted_tickers:
+            selected.append(sorted_tickers[0])
+
+    # Return sorted by score descending
+    selected.sort(key=lambda x: x[1], reverse=True)
+    return [t[0] for t in selected]
+
+
 @dataclass
 class BacktestResult:
     """Result of a backtest run."""
@@ -96,6 +142,8 @@ def compute_target_portfolio(
     current_cash: float,
     config: Config,
     data_provider: DataProvider,
+    sector_mapping: dict[str, str] | None = None,
+    select_one_per_sector: bool = False,
 ) -> TargetPortfolio:
     """Compute the target portfolio for a given date.
 
@@ -105,7 +153,7 @@ def compute_target_portfolio(
     Steps (in order):
       1. Get PIT universe
       2. Compute Clenow score and ATR for each ticker
-      3. Rank by score (top top_pct)
+      3. Rank by score (top top_pct, or one per sector if select_one_per_sector)
       4. Apply filters
       5. Apply double exit rule (existing positions breaking 100-day SMA)
       6. Compute current prices
@@ -168,8 +216,17 @@ def compute_target_portfolio(
             if len(rc) > 0:
                 current_prices[ticker] = float(rc.iloc[-1])
 
-    # Step 3: Rank by score — top pct of universe
-    ranked = rank_by_score(scores, config.top_pct)
+    # Step 3: Rank by score
+    if select_one_per_sector:
+        if not sector_mapping:
+            raise ValueError(
+                "select_one_per_sector=True requires a non-empty sector_mapping"
+            )
+        # Select one stock per sector (highest score in each sector)
+        ranked = _select_one_per_sector(scores, sector_mapping)
+    else:
+        # Traditional: top pct of universe
+        ranked = rank_by_score(scores, config.top_pct)
 
     # Step 4: Apply sequential filters (regime, SMA, price, ADV)
     # Pass pre-loaded all_prices to eliminate N+1 queries
@@ -271,6 +328,8 @@ def run_backtest(
     initial_cash: float,
     config: Config,
     data_provider: DataProvider,
+    sector_mapping: dict[str, str] | None = None,
+    select_one_per_sector: bool = False,
 ) -> BacktestResult:
     """Run a full backtest and return results.
 
@@ -284,6 +343,10 @@ def run_backtest(
          e. Apply any corporate actions between signal and execution dates
          f. Record equity inline (no duplicate loop)
       3. Return BacktestResult
+
+    Args:
+        sector_mapping: ticker -> sector mapping for sector-based selection.
+        select_one_per_sector: if True, select 1 stock per sector instead of top_pct.
     """
     # Step 1: Get rebalance schedule
     rebalance_pairs = get_rebalance_dates(start, end, config)
@@ -327,6 +390,8 @@ def run_backtest(
             current_cash=current_cash,
             config=config,
             data_provider=data_provider,
+            sector_mapping=sector_mapping,
+            select_one_per_sector=select_one_per_sector,
         )
 
         # Step 2b: Compute diff (orders needed)

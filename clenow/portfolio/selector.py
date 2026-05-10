@@ -79,7 +79,7 @@ def apply_filters(
 
     Filters applied in order:
       1. Regime: if SP500 < 200-SMA → block new entries (keep existing positions)
-      2. Stock SMA: close < 100-day SMA → remove
+      2. Stock SMA: close < stock_sma-day SMA → remove
       3. Price: raw_close < min_price → remove
       4. ADV: 20-day ADV < min_adv_dollars → remove
 

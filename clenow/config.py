@@ -24,7 +24,7 @@ class Config:
 
     # Regime / Entry filters
     regime_sma: int = 200
-    stock_sma: int = 100
+    stock_sma: int = 100  # 100-day SMA for exit filter
     min_price: float = 5.0
     min_adv_dollars: float = 10_000_000
 
