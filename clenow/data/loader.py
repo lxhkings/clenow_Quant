@@ -10,11 +10,12 @@ import logging
 import sqlite3
 import time
 from datetime import date
+from pathlib import Path
 from typing import Union
 
 import pandas as pd
 
-from clenow.data.cache import load_from_cache, save_to_cache
+from clenow.data.parquet_cache import ParquetCache
 from clenow.errors import DataAccessError
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ class SQLDataProvider:
         self,
         connection: Union[str, sqlite3.Connection],
         use_cache: bool = True,
+        cache_dir: Path | None = None,
     ) -> None:
         if isinstance(connection, sqlite3.Connection):
             self._conn = connection
@@ -125,6 +127,15 @@ class SQLDataProvider:
         self._pit_index: dict[str, list[tuple[date, date | None]]] | None = None
         self._pit_index_id: str | None = None
 
+        if use_cache:
+            cache_root = cache_dir or (Path.home() / ".clenow" / "cache")
+            self._cache = ParquetCache(
+                cache_dir=cache_root,
+                db_fetcher=self._query_prices_from_db,
+            )
+        else:
+            self._cache = None
+
     # -- public API ---------------------------------------------------------
 
     def load_prices(
@@ -139,12 +150,21 @@ class SQLDataProvider:
         if not tickers:
             return self._empty_prices_frame()
 
-        # Try cache first
-        if self._use_cache:
-            cached = load_from_cache(tickers, start, end)
-            if cached is not None:
-                return cached
+        if self._cache is not None:
+            return self._cache.load(tickers, start, end)
 
+        flat = self._query_prices_from_db(tickers, start, end)
+        if flat.empty:
+            return self._empty_prices_frame()
+        return flat.set_index(["date", "ticker"]).sort_index()
+
+    def _query_prices_from_db(
+        self, tickers: list[str], start: date, end: date
+    ) -> pd.DataFrame:
+        """Pure SQLite read. Returns flat DataFrame with columns:
+        date, ticker, raw_open, raw_high, raw_low, raw_close,
+        volume, adj_close, dividend, split_ratio. No index set.
+        """
         placeholders = ",".join("?" for _ in tickers)
         query = f"""
             SELECT date, ticker, raw_open, raw_high, raw_low, raw_close,
@@ -163,7 +183,10 @@ class SQLDataProvider:
             raise DataAccessError(f"Failed to load prices: {exc}") from exc
 
         if df.empty:
-            return self._empty_prices_frame()
+            return pd.DataFrame(columns=[
+                "date", "ticker", "raw_open", "raw_high", "raw_low",
+                "raw_close", "volume", "adj_close", "dividend", "split_ratio",
+            ])
 
         # Parse dates
         df["date"] = pd.to_datetime(df["date"]).dt.date
@@ -177,16 +200,10 @@ class SQLDataProvider:
         df["dividend"] = df["dividend"].fillna(0.0)
         df["split_ratio"] = df["split_ratio"].fillna(1.0)
 
-        df = df.set_index(["date", "ticker"])
-        result = df[
-            ["raw_open", "raw_high", "raw_low", "raw_close",
-             "volume", "adj_close", "dividend", "split_ratio"]
-        ]
-
-        if self._use_cache:
-            save_to_cache(result, tickers, start, end)
-
-        return result
+        return df[[
+            "date", "ticker", "raw_open", "raw_high", "raw_low",
+            "raw_close", "volume", "adj_close", "dividend", "split_ratio",
+        ]]
 
     def get_universe(self, as_of: date) -> list[str]:
         """Return SP500 constituents as of *as_of* (point-in-time).

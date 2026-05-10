@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import pymysql
 
-from clenow.data.cache import load_from_cache, save_to_cache
+from clenow.data.parquet_cache import ParquetCache
 from clenow.data.provider import DataProvider
 from clenow.errors import DataAccessError
 
@@ -66,6 +67,7 @@ class SynologyDataProvider:
         self,
         config: dict[str, Any] | None = None,
         use_cache: bool = True,
+        cache_dir: Path | None = None,
     ) -> None:
         self._config = config or DEFAULT_DB_CONFIG
         self._conn = _connect(self._config)
@@ -73,6 +75,15 @@ class SynologyDataProvider:
 
         # PIT universe cache: built lazily on first get_universe call
         self._pit_index: dict[str, list[tuple[date, date | None]]] | None = None
+
+        if use_cache:
+            cache_root = cache_dir or (Path.home() / ".clenow" / "cache")
+            self._cache = ParquetCache(
+                cache_dir=cache_root,
+                db_fetcher=self._query_prices_from_db,
+            )
+        else:
+            self._cache = None
 
     # -- DataProvider interface -----------------------------------------------
 
@@ -92,26 +103,17 @@ class SynologyDataProvider:
             raw_open, raw_high, raw_low, raw_close, volume,
             adj_close, dividend, split_ratio
         """
-        self._ensure_connection()
         if not tickers:
             return self._empty_prices_frame()
 
-        # Try cache first
-        if self._use_cache:
-            cached = load_from_cache(tickers, start, end)
-            if cached is not None:
-                return cached
+        if self._cache is not None:
+            return self._cache.load(tickers, start, end)
 
+        self._ensure_connection()  # Only needed when hitting DB directly
         flat = self._query_prices_from_db(tickers, start, end)
         if flat.empty:
             return self._empty_prices_frame()
-
-        result = flat.set_index(["date", "ticker"]).sort_index()
-
-        if self._use_cache:
-            save_to_cache(result, tickers, start, end)
-
-        return result
+        return flat.set_index(["date", "ticker"]).sort_index()
 
     def _query_prices_from_db(
         self, tickers: list[str], start: date, end: date
