@@ -146,8 +146,20 @@ class ParquetCache:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
 
-    def _update_manifest_entries(self, tickers: list[str]) -> None:
-        """Recompute manifest rows for `tickers` from their on-disk files."""
+    def _update_manifest_entries(
+        self,
+        tickers: list[str],
+        requested_range: tuple[date, date] | None = None,
+    ) -> None:
+        """Recompute manifest rows for `tickers` from their on-disk files.
+
+        Parameters
+        ----------
+        requested_range : tuple[date, date] | None
+            If provided, manifest min_date/max_date are expanded to cover this
+            range. This prevents the fetcher from being re-called for ranges
+            where the DB returned no rows (e.g., holidays/weekends).
+        """
         if not tickers:
             return
         manifest = self._read_manifest()
@@ -165,10 +177,18 @@ class ParquetCache:
             if df.empty:
                 logger.warning("Ticker %s parquet file empty; skipping manifest update", ticker)
                 continue
+            min_d = df["date"].min()
+            max_d = df["date"].max()
+            if requested_range is not None:
+                req_start, req_end = requested_range
+                if req_start < min_d:
+                    min_d = req_start
+                if req_end > max_d:
+                    max_d = req_end
             new_rows.append({
                 "ticker": ticker,
-                "min_date": df["date"].min(),
-                "max_date": df["date"].max(),
+                "min_date": min_d,
+                "max_date": max_d,
                 "row_count": int(len(df)),
                 "updated_at": now,
             })
@@ -205,6 +225,10 @@ class ParquetCache:
                 batches.setdefault(rng, []).append(ticker)
 
         touched: set[str] = set()
+        # Track the union range across all gap batches so the manifest
+        # records the full requested window (not just what the DB returned).
+        overall_start = min(s for s, _e in batches)
+        overall_end = max(e for _s, e in batches)
         for (start, end), tickers in batches.items():
             tickers_sorted = sorted(tickers)
             df = self.db_fetcher(tickers_sorted, start, end)
@@ -219,7 +243,9 @@ class ParquetCache:
                 touched.add(str(ticker))
 
         if touched:
-            self._update_manifest_entries(sorted(touched))
+            self._update_manifest_entries(
+                sorted(touched), requested_range=(overall_start, overall_end)
+            )
 
     # ------------------------------------------------------------------
     # DuckDB read path
@@ -256,3 +282,28 @@ class ParquetCache:
         # DuckDB returns date as np.datetime64; coerce back to python date for parity with DB path
         df["date"] = pd.to_datetime(df["date"]).dt.date
         return df
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
+    def load(
+        self, tickers: list[str], start: date, end: date
+    ) -> pd.DataFrame:
+        """Return MultiIndex(date, ticker) DataFrame for [start, end]."""
+        empty = pd.DataFrame(
+            columns=PRICE_COLUMNS,
+            index=pd.MultiIndex.from_tuples([], names=["date", "ticker"]),
+        )
+        if not tickers:
+            return empty
+
+        manifest = self._read_manifest()
+        gaps = self._identify_gaps(manifest, tickers, start, end)
+        if gaps:
+            self._fetch_and_persist(gaps)
+
+        flat = self._query_via_duckdb(tickers, start, end)
+        if flat.empty:
+            return empty
+        return flat.set_index(["date", "ticker"]).sort_index()

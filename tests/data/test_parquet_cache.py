@@ -315,3 +315,75 @@ class TestQueryViaDuckDB:
             ["AAPL"], date(2024, 1, 1), date(2024, 1, 31)
         )
         assert list(df.columns) == ["date", "ticker", *PRICE_COLUMNS]
+
+
+class TestLoadEndToEnd:
+    def test_cold_load_calls_fetcher_then_caches(self, tmp_path):
+        calls = []
+        def fetcher(tickers, start, end):
+            calls.append(sorted(tickers))
+            rows = []
+            for t in tickers:
+                rows.append(_ticker_rows(t, [date(2024, 1, 2), date(2024, 1, 3)]))
+            return pd.concat(rows, ignore_index=True)
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        df = cache.load(["AAPL", "MSFT"], date(2024, 1, 1), date(2024, 1, 31))
+
+        # MultiIndex (date, ticker)
+        assert df.index.names == ["date", "ticker"]
+        assert list(df.columns) == PRICE_COLUMNS
+        assert len(df) == 4  # 2 tickers x 2 dates
+        assert calls == [["AAPL", "MSFT"]]
+
+    def test_warm_load_skips_fetcher(self, tmp_path):
+        calls = []
+        def fetcher(tickers, start, end):
+            calls.append(sorted(tickers))
+            return pd.concat(
+                [_ticker_rows(t, [date(2024, 1, 2), date(2024, 1, 3)])
+                 for t in tickers],
+                ignore_index=True,
+            )
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        cache.load(["AAPL"], date(2024, 1, 1), date(2024, 1, 31))   # warms cache
+        cache.load(["AAPL"], date(2024, 1, 1), date(2024, 1, 31))   # warm
+
+        assert len(calls) == 1  # second call did NOT hit fetcher
+
+    def test_partial_load_only_fetches_gap(self, tmp_path):
+        calls = []
+        def fetcher(tickers, start, end):
+            calls.append((sorted(tickers), start, end))
+            return pd.concat(
+                [_ticker_rows(t, [start, end]) for t in tickers],
+                ignore_index=True,
+            )
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        # Seed: AAPL covered for Jan only
+        cache.load(["AAPL"], date(2024, 1, 1), date(2024, 1, 31))
+        calls.clear()
+
+        # Now ask for Jan + Feb. Should fetch only Feb gap.
+        cache.load(["AAPL"], date(2024, 1, 1), date(2024, 2, 28))
+        # Exactly one fetch, for the Feb gap
+        assert len(calls) == 1
+        _, start, end = calls[0]
+        assert start == date(2024, 2, 1)
+        assert end == date(2024, 2, 28)
+
+    def test_returns_only_requested_window(self, tmp_path):
+        def fetcher(tickers, start, end):
+            return pd.concat(
+                [_ticker_rows(t, [date(2024, 1, 2), date(2024, 6, 3)])
+                 for t in tickers],
+                ignore_index=True,
+            )
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=fetcher)
+        df = cache.load(["AAPL"], date(2024, 1, 1), date(2024, 3, 31))
+        assert df.reset_index()["date"].tolist() == [date(2024, 1, 2)]
+
+    def test_empty_tickers_returns_empty_dataframe(self, tmp_path):
+        cache = ParquetCache(cache_dir=tmp_path, db_fetcher=_stub_fetcher_empty)
+        df = cache.load([], date(2024, 1, 1), date(2024, 1, 31))
+        assert df.empty
+        assert df.index.names == ["date", "ticker"]
