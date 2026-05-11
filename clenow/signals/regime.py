@@ -43,3 +43,36 @@ def is_bull_regime(
     last_close = clean.iloc[-1]
 
     return bool(last_close > sma)
+
+
+def is_bear_regime(
+    index_close: pd.Series,
+    sma_window: int = 200,
+) -> bool:
+    """Check if the market is in a bear regime.
+
+    Returns True when the last close is below the SMA(sma_window)
+    of the index. Defaults to False (not bear) when there is insufficient
+    data to compute the SMA.
+
+    Parameters
+    ----------
+    index_close : pd.Series
+        Daily close prices for a broad market index (e.g. S&P 500).
+    sma_window : int
+        Simple moving average lookback (default 200).
+
+    Returns
+    -------
+    bool
+        True if bear regime (last close < SMA), False otherwise.
+    """
+    clean = index_close.dropna()
+
+    if len(clean) < sma_window:
+        return False
+
+    sma = clean.iloc[-sma_window:].mean()
+    last_close = clean.iloc[-1]
+
+    return bool(last_close < sma)

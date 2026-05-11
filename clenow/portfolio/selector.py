@@ -2,22 +2,30 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from clenow.config import Config
 from clenow.data.utils import get_ticker_series
+from clenow.signals.regime import is_bear_regime
 from clenow.types import Position
 
+if TYPE_CHECKING:
+    from clenow.markets.profiles import MarketProfile
 
-def _is_bear_regime(data_provider, as_of: date, config: Config) -> bool:
-    """Return True if SP500 close < its 200-day SMA (bear regime)."""
-    lookback = config.regime_sma + 10  # small buffer for missing data
-    start = date(as_of.year - 1, as_of.month, as_of.day)  # ~1yr lookback
-    idx = data_provider.get_index_prices("SP500", start, as_of)
+
+def _is_bear_regime(
+    data_provider,
+    as_of: date,
+    regime_index_id: str,
+    sma_window: int,
+) -> bool:
+    """Bear regime: index < N-day SMA. Profile drives index_id and window."""
+    start = as_of - timedelta(days=sma_window * 2)
+    idx = data_provider.get_index_prices(regime_index_id, start, as_of)
     if idx.empty:
-        # No data → assume bull (don't block on missing data)
         return False
     # Handle different column names: raw_close, close, or first numeric column
     if "raw_close" in idx.columns:
@@ -25,15 +33,10 @@ def _is_bear_regime(data_provider, as_of: date, config: Config) -> bool:
     elif "close" in idx.columns:
         close_col = "close"
     else:
-        # Find first numeric column
         numeric_cols = idx.select_dtypes(include=["number"]).columns
         close_col = numeric_cols[0] if len(numeric_cols) > 0 else idx.columns[0]
     closes = idx[close_col].sort_index()
-    if len(closes) < config.regime_sma:
-        return False
-    sma = closes.iloc[-config.regime_sma :].mean()
-    current = closes.iloc[-1]
-    return current < sma
+    return is_bear_regime(closes, sma_window=sma_window)
 
 
 def _stock_fails_sma(ticker_data: pd.DataFrame | None, config: Config) -> bool:
@@ -74,11 +77,12 @@ def apply_filters(
     as_of: date,
     config: Config,
     current_positions: dict[str, Position] | None = None,
+    profile: MarketProfile | None = None,
 ) -> list[str]:
     """Apply sequential filters preserving rank order.
 
     Filters applied in order:
-      1. Regime: if SP500 < 200-SMA → block new entries (keep existing positions)
+      1. Regime: if index < regime_sma-SMA → block new entries (keep existing positions)
       2. Stock SMA: close < stock_sma-day SMA → remove
       3. Price: raw_close < min_price → remove
       4. ADV: 20-day ADV < min_adv_dollars → remove
@@ -91,6 +95,8 @@ def apply_filters(
         as_of: the date for point-in-time filtering.
         config: system configuration.
         current_positions: existing positions (used for regime filter).
+        profile: MarketProfile driving regime_index_id and regime_sma_window.
+            Defaults to US profile when None.
 
     Returns:
         Filtered list of tickers in original rank order.
@@ -98,8 +104,17 @@ def apply_filters(
     if not ranked_tickers:
         return []
 
+    if profile is None:
+        from clenow.markets import get_profile
+        profile = get_profile(config.market if hasattr(config, "market") else "US")
+
     existing = set(current_positions.keys()) if current_positions else set()
-    bear = _is_bear_regime(data_provider, as_of, config)
+    bear = _is_bear_regime(
+        data_provider,
+        as_of,
+        profile.regime_index_id,
+        profile.regime_sma_window,
+    )
 
     result: list[str] = []
     for ticker in ranked_tickers:

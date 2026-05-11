@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 
 from clenow.config import Config
+from clenow.markets.profiles import MarketProfile
+from clenow.markets.costs import USCostModel
 from clenow.portfolio.selector import apply_filters
 from clenow.types import Position
 
@@ -16,6 +18,24 @@ from clenow.types import Position
 # Index data only needs enough for regime_sma + buffer.
 
 N_STOCK = 25  # rows of stock data (enough for 20-day ADV window)
+
+
+def _test_profile(regime_sma_window: int = 5) -> MarketProfile:
+    """Build a MarketProfile with small windows suitable for test data."""
+    return MarketProfile(
+        name="TEST",
+        currency="USD",
+        universe_index_id="SP500",
+        regime_index_id="SP500",
+        annualization_days=252,
+        lot_size=1,
+        min_price=1.0,
+        min_adv_amount=1.0,
+        trading_calendar_name="NYSE",
+        cost_model=USCostModel(),
+        default_starting_capital=100_000,
+        regime_sma_window=regime_sma_window,
+    )
 
 
 def _make_index_prices(dates: list, closes: list[float]) -> pd.DataFrame:
@@ -77,12 +97,13 @@ def _passing_stock_all_prices(
 
 
 class TestRegimeFilter:
-    """Bear regime: SP500 < 200-SMA → no new positions, but keep existing."""
+    """Bear regime: index < SMA → no new positions, but keep existing."""
 
     def test_bear_regime_blocks_new_entry(self):
         """In bear regime, new tickers are filtered out."""
         as_of = date(2024, 6, 1)
         config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+        profile = _test_profile(regime_sma_window=5)
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bear_index()
@@ -90,7 +111,8 @@ class TestRegimeFilter:
         all_prices = _passing_stock_all_prices("AAPL")
 
         result = apply_filters(
-            ["AAPL"], all_prices, provider, as_of, config, current_positions=None
+            ["AAPL"], all_prices, provider, as_of, config,
+            current_positions=None, profile=profile,
         )
         assert result == []  # blocked by regime
 
@@ -98,6 +120,7 @@ class TestRegimeFilter:
         """In bear regime, existing positions in the ranked list are KEPT."""
         as_of = date(2024, 6, 1)
         config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+        profile = _test_profile(regime_sma_window=5)
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bear_index()
@@ -114,14 +137,16 @@ class TestRegimeFilter:
             )
         }
         result = apply_filters(
-            ["AAPL"], all_prices, provider, as_of, config, current_positions=existing
+            ["AAPL"], all_prices, provider, as_of, config,
+            current_positions=existing, profile=profile,
         )
         assert result == ["AAPL"]  # existing position kept
 
     def test_bull_regime_allows_new_entry(self):
-        """In bull regime (SP500 > SMA), new entries are allowed."""
+        """In bull regime (index > SMA), new entries are allowed."""
         as_of = date(2024, 6, 1)
         config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+        profile = _test_profile(regime_sma_window=5)
 
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
@@ -129,7 +154,8 @@ class TestRegimeFilter:
         all_prices = _passing_stock_all_prices("AAPL")
 
         result = apply_filters(
-            ["AAPL"], all_prices, provider, as_of, config, current_positions=None
+            ["AAPL"], all_prices, provider, as_of, config,
+            current_positions=None, profile=profile,
         )
         assert result == ["AAPL"]
 
