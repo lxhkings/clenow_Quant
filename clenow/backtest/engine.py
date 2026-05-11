@@ -68,9 +68,9 @@ def _slice_prices(
     Returns:
         DataFrame with matching rows, or empty DataFrame if preloaded is None/empty.
     """
-    _empty = pd.DataFrame(columns=["raw_close", "adj_close", "raw_high", "raw_low", "volume"])
+    _COLS = ["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
     if preloaded is None or preloaded.empty:
-        return _empty
+        return pd.DataFrame(columns=_COLS)
     date_idx = preloaded.index.get_level_values("date")
     ticker_idx = preloaded.index.get_level_values("ticker")
     mask = (
@@ -79,7 +79,7 @@ def _slice_prices(
         & (ticker_idx.isin(set(tickers)))
     )
     sliced = preloaded.loc[mask]
-    return sliced if not sliced.empty else _empty
+    return sliced if not sliced.empty else preloaded.iloc[0:0]
 
 
 def _select_one_per_sector(
@@ -430,7 +430,7 @@ def run_backtest(
     # Helper to get empty prices frame
     def _empty_prices_frame() -> pd.DataFrame:
         return pd.DataFrame(
-            columns=["raw_close", "adj_close", "raw_high", "raw_low", "volume"]
+            columns=["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
         )
 
     total = len(rebalance_pairs)

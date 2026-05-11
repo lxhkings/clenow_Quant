@@ -801,12 +801,14 @@ def _make_prices(tickers: list[str], dates: list[date]) -> pd.DataFrame:
             rows.append({
                 "date": pd.Timestamp(d),
                 "ticker": t,
-                "raw_close": 100.0,
                 "raw_open": 99.0,
                 "raw_high": 101.0,
                 "raw_low": 98.0,
-                "adj_close": 100.0,
+                "raw_close": 100.0,
                 "volume": 1_000_000.0,
+                "adj_close": 100.0,
+                "dividend": 0.0,
+                "split_ratio": 1.0,
             })
     df = pd.DataFrame(rows).set_index(["date", "ticker"])
     return df
@@ -840,4 +842,4 @@ def test_slice_prices_handles_none():
     """_slice_prices should return an empty DataFrame when preloaded is None."""
     result = _slice_prices(None, ["AAPL"], date(2024, 1, 1), date(2024, 1, 1))
     assert result.empty
-    assert list(result.columns) == ["raw_close", "adj_close", "raw_high", "raw_low", "volume"]
+    assert list(result.columns) == ["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
