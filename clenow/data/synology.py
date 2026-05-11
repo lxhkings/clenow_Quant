@@ -342,6 +342,17 @@ class SynologyDataProvider:
 
         logger.info("Built PIT index: %d tickers total", len(self._pit_index))
 
+    def get_stocks_meta(self, tickers: list[str]) -> pd.DataFrame:
+        """Returns DataFrame indexed by ticker with at least 'name' column."""
+        if not tickers:
+            return pd.DataFrame(columns=["name"]).rename_axis("ticker")
+        placeholders = ",".join(["%s"] * len(tickers))
+        query = f"SELECT ticker, name FROM stocks WHERE ticker IN ({placeholders})"
+        with self._conn.cursor() as cur:
+            cur.execute(query, tuple(tickers))
+            rows = cur.fetchall()
+        return pd.DataFrame(rows, columns=["ticker", "name"]).set_index("ticker")
+
     # -- helpers --------------------------------------------------------------
 
     @staticmethod

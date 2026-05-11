@@ -28,3 +28,7 @@ class DataProvider(Protocol):
     ) -> pd.DataFrame:
         """Load index-level prices (e.g., SP500) for regime detection."""
         ...
+
+    def get_stocks_meta(self, tickers: list[str]) -> pd.DataFrame:
+        """Returns DataFrame indexed by ticker with at least 'name' column."""
+        ...

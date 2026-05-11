@@ -249,6 +249,15 @@ class SQLDataProvider:
         df["date"] = pd.to_datetime(df["date"]).dt.date
         return df
 
+    def get_stocks_meta(self, tickers: list[str]) -> pd.DataFrame:
+        """Returns DataFrame indexed by ticker with at least 'name' column."""
+        if not tickers:
+            return pd.DataFrame(columns=["name"]).rename_axis("ticker")
+        placeholders = ",".join("?" for _ in tickers)
+        query = f"SELECT ticker, name FROM stocks WHERE ticker IN ({placeholders})"
+        rows = self._conn.execute(query, tickers).fetchall()
+        return pd.DataFrame(rows, columns=["ticker", "name"]).set_index("ticker")
+
     # -- PIT cache ----------------------------------------------------------
 
     def _build_pit_index(self) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
@@ -51,23 +52,41 @@ def _stock_fails_sma(ticker_data: pd.DataFrame | None, config: Config) -> bool:
     return current < sma
 
 
-def _stock_fails_price(ticker_data: pd.DataFrame | None, config: Config) -> bool:
+def _stock_fails_price(ticker_data: pd.DataFrame | None, min_price: float) -> bool:
     """Return True if raw_close < min_price threshold."""
     if ticker_data is None:
         return True
     closes = ticker_data["raw_close"].dropna()
     if closes.empty:
         return True
-    return closes.iloc[-1] < config.min_price
+    return closes.iloc[-1] < min_price
 
 
-def _stock_fails_adv(ticker_data: pd.DataFrame | None, config: Config) -> bool:
-    """Return True if 20-day ADV < min_adv_dollars."""
+def _stock_fails_adv(ticker_data: pd.DataFrame | None, min_adv: float) -> bool:
+    """Return True if 20-day ADV < min_adv."""
     if ticker_data is None or len(ticker_data) < 20:
         return True
     recent = ticker_data.iloc[-20:]
     dollar_volume = recent["volume"] * recent["raw_close"]
-    return dollar_volume.mean() < config.min_adv_dollars
+    return dollar_volume.mean() < min_adv
+
+
+_ST_NAME_PATTERN = re.compile(r"(\*?ST|PT|退)", re.IGNORECASE)
+
+
+def _exclude_st(candidates: list[str], stocks_meta: pd.DataFrame) -> list[str]:
+    """Drop tickers whose name in stocks_meta matches ST/*ST/PT/退. Unknown tickers kept."""
+    if stocks_meta is None or stocks_meta.empty:
+        return list(candidates)
+    kept = []
+    for ticker in candidates:
+        if ticker not in stocks_meta.index:
+            kept.append(ticker)  # missing meta → conservative keep
+            continue
+        name = stocks_meta.loc[ticker, "name"]
+        if not isinstance(name, str) or not _ST_NAME_PATTERN.search(name):
+            kept.append(ticker)
+    return kept
 
 
 def apply_filters(
@@ -116,6 +135,14 @@ def apply_filters(
         profile.regime_sma_window,
     )
 
+    # ST exclusion filter (CN markets only)
+    if "st" in profile.universe_exclusion_filters:
+        stocks_meta = data_provider.get_stocks_meta(ranked_tickers)
+        ranked_tickers = _exclude_st(ranked_tickers, stocks_meta)
+
+    min_price = profile.min_price
+    min_adv = profile.min_adv_amount
+
     result: list[str] = []
     for ticker in ranked_tickers:
         # Regime filter: in bear regime, only keep existing positions
@@ -130,11 +157,11 @@ def apply_filters(
             continue
 
         # Price filter
-        if _stock_fails_price(ticker_data, config):
+        if _stock_fails_price(ticker_data, min_price):
             continue
 
         # ADV filter
-        if _stock_fails_adv(ticker_data, config):
+        if _stock_fails_adv(ticker_data, min_adv):
             continue
 
         result.append(ticker)
