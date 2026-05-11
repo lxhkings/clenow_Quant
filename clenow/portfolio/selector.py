@@ -134,6 +134,8 @@ def apply_filters(
     existing = set(current_positions.keys()) if current_positions else set()
 
     if bear_regime_cache is not None:
+        # Default False (allow entries) matches _is_bear_regime's warmup behaviour:
+        # insufficient SMA history → assume non-bear so early dates aren't silently skipped.
         bear = bear_regime_cache.get(as_of, False)
     else:
         bear = _is_bear_regime(

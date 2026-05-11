@@ -561,6 +561,13 @@ class TestRunBacktestSmoke:
         assert isinstance(result.final_positions, dict)
         assert isinstance(result.final_cash, float)
 
+        # Performance contract: load_prices called exactly once (the upfront preload),
+        # never once per rebalance iteration.
+        assert provider.load_prices.call_count == 1, (
+            f"Expected 1 preload call, got {provider.load_prices.call_count}. "
+            "A regression may have added per-iteration load_prices calls."
+        )
+
 
 class TestProfileWiring:
     """Verify that MarketProfile is wired through compute_target_portfolio."""

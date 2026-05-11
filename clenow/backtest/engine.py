@@ -49,6 +49,10 @@ logger = logging.getLogger(__name__)
 _PRICE_LOOKBACK_DAYS = 300
 # Approximate calendar days for 300 trading days (~420 calendar days)
 _PRICE_LOOKBACK_CALENDAR = timedelta(days=450)
+_PRICE_COLUMNS = [
+    "raw_open", "raw_high", "raw_low", "raw_close",
+    "volume", "adj_close", "dividend", "split_ratio",
+]
 
 
 def _slice_prices(
@@ -68,9 +72,8 @@ def _slice_prices(
     Returns:
         DataFrame with matching rows, or empty DataFrame if preloaded is None/empty.
     """
-    _COLS = ["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
     if preloaded is None or preloaded.empty:
-        return pd.DataFrame(columns=_COLS)
+        return pd.DataFrame(columns=_PRICE_COLUMNS)
     date_idx = preloaded.index.get_level_values("date")
     ticker_idx = preloaded.index.get_level_values("ticker")
     # Convert date_idx to dates if it contains Timestamps (handles both formats)
@@ -467,9 +470,7 @@ def run_backtest(
 
     # Helper to get empty prices frame
     def _empty_prices_frame() -> pd.DataFrame:
-        return pd.DataFrame(
-            columns=["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
-        )
+        return pd.DataFrame(columns=_PRICE_COLUMNS)
 
     total = len(rebalance_pairs)
 
@@ -838,15 +839,16 @@ def _detect_delistings(
     for ticker in tickers:
         ticker_data = _get_ticker_series(prices, ticker)
 
-        # If no price data at all for as_of, stock may be delisted
+        # If no price data at all for the lookback window, stock may be delisted.
         if ticker_data is None or ticker_data.empty:
-            # Look back to find the last available close price
-            lookback_start = as_of - timedelta(days=30)
-            if preloaded_prices is not None:
-                hist_prices = _slice_prices(preloaded_prices, [ticker], lookback_start, as_of)
-            else:
+            # In the preloaded path the 30-day window was already fetched above —
+            # a repeated slice returns the same empty result, so skip it.
+            if preloaded_prices is None:
+                lookback_start = as_of - timedelta(days=30)
                 hist_prices = data_provider.load_prices([ticker], lookback_start, as_of)
-            hist_data = _get_ticker_series(hist_prices, ticker)
+                hist_data = _get_ticker_series(hist_prices, ticker)
+            else:
+                hist_data = None
 
             if hist_data is None or hist_data.empty:
                 # No price data at all — force close at entry price (best effort)
