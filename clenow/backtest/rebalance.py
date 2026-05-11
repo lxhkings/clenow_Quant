@@ -1,6 +1,6 @@
 """Rebalance schedule — signal_date (Friday close) and execution_date (Monday open).
 
-Uses pandas_market_calendars (NYSE) for trading-day validation.
+Uses pandas_market_calendars for trading-day validation.
 Signal date = last trading day of the week (usually Friday).
 Execution date = first trading day of the following week (usually Monday).
 If Monday is a holiday, execution falls to Tuesday.
@@ -20,6 +20,7 @@ def get_rebalance_dates(
     start: date,
     end: date,
     config: Config,
+    calendar_name: str = "NYSE",
 ) -> list[tuple[date, date]]:
     """Return (signal_date, execution_date) pairs for each rebalance cycle.
 
@@ -27,14 +28,16 @@ def get_rebalance_dates(
         start: Backtest start date (inclusive).
         end: Backtest end date (inclusive).
         config: System configuration (rebalance_freq: "weekly" or "biweekly").
+        calendar_name: Trading calendar to use (default "NYSE").
+            Other options: "XSHG" (Shanghai), "XHKG" (Hong Kong).
 
     Returns:
         List of (signal_date, execution_date) tuples, chronologically sorted.
         signal_date is always < execution_date (no look-ahead).
     """
-    nyse = mcal.get_calendar("NYSE")
-    # Get NYSE trading sessions covering the full range with buffer
-    schedule = nyse.valid_days(
+    calendar = mcal.get_calendar(calendar_name)
+    # Get trading sessions covering the full range with buffer
+    schedule = calendar.valid_days(
         start_date=start - timedelta(days=7),
         end_date=end + timedelta(days=7),
     )

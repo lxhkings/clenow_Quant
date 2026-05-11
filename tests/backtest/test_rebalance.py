@@ -106,6 +106,27 @@ class TestHolidayHandling:
             assert exec_date.weekday() == 0  # Monday
 
 
+class TestXSHGCalendar:
+    """Rebalance dates respect XSHG (Shanghai) calendar."""
+
+    def test_rebalance_dates_use_xshg_calendar(self):
+        """When calendar_name='XSHG', rebalance dates align to Shanghai trading days."""
+        config = Config(rebalance_freq="weekly")
+        # CN National Day holiday Oct 1-7 2024: should not appear
+        pairs = get_rebalance_dates(
+            start=date(2024, 9, 25),
+            end=date(2024, 10, 15),
+            config=config,
+            calendar_name="XSHG",
+        )
+        # No signal or execution date should fall within Oct 1-7
+        for signal_date, exec_date in pairs:
+            for d in (signal_date, exec_date):
+                assert not (date(2024, 10, 1) <= d <= date(2024, 10, 7)), (
+                    f"{d} falls within CN National Day holiday"
+                )
+
+
 class TestDateBounds:
     """No rebalance dates before start or after end."""
 
