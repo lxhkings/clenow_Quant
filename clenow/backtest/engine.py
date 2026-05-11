@@ -402,8 +402,11 @@ def run_backtest(
             columns=["raw_close", "adj_close", "raw_high", "raw_low", "volume"]
         )
 
+    total = len(rebalance_pairs)
     # Process each rebalance pair
-    for signal_date, execution_date in rebalance_pairs:
+    for i, (signal_date, execution_date) in enumerate(rebalance_pairs, 1):
+        n_pos = len(tracker.get_positions())
+        print(f"[{i}/{total}] signal={signal_date} exec={execution_date} pos={n_pos}", flush=True)
         # Step 0: Detect and handle delisted positions before computing target
         _detect_delistings(tracker, data_provider, signal_date, profile=profile)
 

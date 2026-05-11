@@ -21,8 +21,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--start",
         type=date.fromisoformat,
-        default=date(2022, 1, 1),
-        help="Backtest start date (default: 2022-01-01)",
+        default=date(2010, 1, 1),
+        help="Backtest start date (default: 2010-01-01)",
     )
     parser.add_argument(
         "--end",

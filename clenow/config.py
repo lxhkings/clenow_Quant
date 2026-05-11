@@ -43,7 +43,7 @@ class Config:
     commission_per_share: float = 0.0
 
     # Rebalancing
-    rebalance_freq: str = "weekly"  # "weekly" | "biweekly"
+    rebalance_freq: str = "daily"  # "daily" | "weekly" | "biweekly"
     rebalance_dow: int = 0  # 0 = Monday open
 
     # Cash interest

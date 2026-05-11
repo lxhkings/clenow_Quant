@@ -162,6 +162,8 @@ class SynologyDataProvider:
             "open": "raw_open", "high": "raw_high",
             "low": "raw_low", "close": "raw_close",
         })
+        for col in ("raw_open", "raw_high", "raw_low", "raw_close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
         df["adj_close"] = df["raw_close"]
         df["dividend"] = 0.0
         df["split_ratio"] = 1.0
@@ -338,19 +340,18 @@ class SynologyDataProvider:
                 continue
 
             dates_sorted = sorted(dates)
-            first_date = dates_sorted[0]
             last_date = dates_sorted[-1]
 
             # Check if ticker is still in the latest snapshot
             # If the latest snapshot is recent (within 30 days), assume still active
             today = date.today()
             if (today - last_date).days <= 30:
-                self._pit_index[ticker] = [(first_date, None)]
+                # No historical PIT data — treat as valid for all dates
+                self._pit_index[ticker] = [(date.min, None)]
             else:
                 # Ticker was removed after last snapshot
-                # We don't know exact removal date, use last snapshot + 1 day as approximation
                 from datetime import timedelta
-                self._pit_index[ticker] = [(first_date, last_date + timedelta(days=1))]
+                self._pit_index[ticker] = [(date.min, last_date + timedelta(days=1))]
 
         logger.info("Built PIT index for %s: %d tickers total", index_id, len(self._pit_index))
 
