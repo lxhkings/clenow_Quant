@@ -127,6 +127,10 @@ def _make_mock_provider(
     else:
         provider.get_index_prices.return_value = _make_index_data(bull=True)
 
+    provider.get_stocks_meta.return_value = pd.DataFrame(
+        columns=["name"], index=pd.Index([], name="ticker")
+    )
+
     return provider
 
 
@@ -551,3 +555,232 @@ class TestRunBacktestSmoke:
         assert isinstance(result.trades, list)
         assert isinstance(result.final_positions, dict)
         assert isinstance(result.final_cash, float)
+
+
+class TestProfileWiring:
+    """Verify that MarketProfile is wired through compute_target_portfolio."""
+
+    def test_compute_target_portfolio_uses_profile_exit_sma(self):
+        """exit_sma_window from profile drives _check_sma_break threshold.
+
+        With a short exit_sma_window=20, a stock that has been declining
+        for 30 days should be forced-sold. With the default 100-day window
+        the same stock would NOT be forced-sold (not enough data below SMA).
+        """
+        from clenow.markets.profiles import MarketProfile
+        from clenow.markets.costs import USCostModel
+
+        as_of = date(2024, 12, 31)
+
+        # Custom profile with exit_sma_window=20 (short)
+        profile = MarketProfile(
+            name="TEST",
+            currency="USD",
+            universe_index_id="SP500",
+            regime_index_id="SP500",
+            annualization_days=252,
+            lot_size=1,
+            min_price=5.0,
+            min_adv_amount=1.0,
+            trading_calendar_name="NYSE",
+            cost_model=USCostModel(),
+            default_starting_capital=100_000,
+            score_window=90,
+            regime_sma_window=200,
+            exit_sma_window=20,  # SHORT window — easier to trigger SMA break
+        )
+
+        config = Config(
+            score_window=90,
+            atr_period=20,
+            regime_sma=200,
+            stock_sma=100,
+            min_price=5.0,
+            min_adv_dollars=1.0,
+            top_pct=0.50,
+            risk_factor=0.001,
+        )
+
+        # Build AAPL data: rise for 200 days then decline sharply for 100
+        # With 20-day SMA window, the recent decline will break the SMA.
+        # With 100-day SMA window, the decline just barely starts to break.
+        n_days = 300
+        dates = pd.bdate_range(date(2024, 1, 2), periods=n_days)
+        closes = []
+        for i in range(n_days):
+            if i < 200:
+                closes.append(100 + i * 0.2)  # Rising to ~140
+            else:
+                closes.append(140 - (i - 200) * 1.0)  # Sharp decline
+
+        aapl_data = pd.DataFrame({
+            "raw_open": [c + 0.5 for c in closes],
+            "raw_high": [c + 1.0 for c in closes],
+            "raw_low": [c - 1.0 for c in closes],
+            "raw_close": closes,
+            "volume": 1_000_000.0,
+            "adj_close": closes,
+            "dividend": 0.0,
+            "split_ratio": 1.0,
+        }, index=pd.MultiIndex.from_arrays(
+            [dates.date, ["AAPL"] * n_days],
+            names=["date", "ticker"]
+        ))
+
+        # MSFT: strong uptrend (stays in target)
+        msft_closes = [100 + i * 0.2 for i in range(n_days)]
+        msft_data = pd.DataFrame({
+            "raw_open": [c + 0.5 for c in msft_closes],
+            "raw_high": [c + 1.0 for c in msft_closes],
+            "raw_low": [c - 1.0 for c in msft_closes],
+            "raw_close": msft_closes,
+            "volume": 1_000_000.0,
+            "adj_close": msft_closes,
+            "dividend": 0.0,
+            "split_ratio": 1.0,
+        }, index=pd.MultiIndex.from_arrays(
+            [dates.date, ["MSFT"] * n_days],
+            names=["date", "ticker"]
+        ))
+
+        stock_data = {"AAPL": aapl_data, "MSFT": msft_data}
+        bull_index = _make_index_data(n_days=250, bull=True)
+        provider = _make_mock_provider(
+            universe=["AAPL", "MSFT"],
+            stock_data=stock_data,
+            index_data=bull_index,
+        )
+
+        # AAPL is an existing position
+        existing = {
+            "AAPL": Position(
+                ticker="AAPL", shares=100, entry_price=100.0,
+                entry_date=date(2024, 6, 1), atr_at_entry=2.0,
+            ),
+            "MSFT": Position(
+                ticker="MSFT", shares=100, entry_price=100.0,
+                entry_date=date(2024, 6, 1), atr_at_entry=2.0,
+            ),
+        }
+
+        # With exit_sma_window=20, AAPL's sharp decline breaks the 20-day SMA
+        result = compute_target_portfolio(
+            as_of=as_of,
+            current_positions=existing,
+            current_cash=500_000.0,
+            config=config,
+            data_provider=provider,
+            profile=profile,
+        )
+
+        # AAPL should be forced-sold (breaks 20-day SMA with recent decline)
+        assert "AAPL" not in result.positions
+        # MSFT stays (strong uptrend)
+        assert "MSFT" in result.positions
+
+    def test_compute_target_portfolio_defaults_to_us_profile(self):
+        """Without explicit profile, US profile is used (backward-compat)."""
+        as_of = date(2024, 12, 31)
+        config = Config(
+            score_window=90,
+            atr_period=20,
+            regime_sma=200,
+            stock_sma=100,
+            min_price=5.0,
+            min_adv_dollars=1.0,
+            top_pct=0.20,
+            risk_factor=0.001,
+        )
+
+        stock_data = {}
+        for ticker in ["AAPL", "MSFT", "GOOG"]:
+            stock_data[ticker] = _make_stock_data(
+                n_days=300, ticker=ticker, price=100.0, trend=0.1, volume=1_000_000.0
+            )
+
+        provider = _make_mock_provider(
+            universe=["AAPL", "MSFT", "GOOG"],
+            stock_data=stock_data,
+        )
+
+        # No profile passed — should default to US
+        result = compute_target_portfolio(
+            as_of=as_of,
+            current_positions={},
+            current_cash=1_000_000.0,
+            config=config,
+            data_provider=provider,
+        )
+
+        assert isinstance(result, TargetPortfolio)
+        assert len(result.positions) >= 1
+
+    def test_run_backtest_accepts_profile(self):
+        """run_backtest accepts profile parameter and passes it through."""
+        from clenow.markets.profiles import MarketProfile
+        from clenow.markets.costs import USCostModel
+
+        profile = MarketProfile(
+            name="TEST",
+            currency="USD",
+            universe_index_id="SP500",
+            regime_index_id="SP500",
+            annualization_days=252,
+            lot_size=1,
+            min_price=5.0,
+            min_adv_amount=1.0,
+            trading_calendar_name="NYSE",
+            cost_model=USCostModel(),
+            default_starting_capital=100_000,
+            score_window=90,
+            regime_sma_window=200,
+            exit_sma_window=100,
+        )
+
+        config = Config(
+            score_window=90,
+            stock_sma=100,
+            regime_sma=200,
+            min_price=5.0,
+            min_adv_dollars=1.0,
+            top_pct=0.50,
+            rebalance_freq="weekly",
+        )
+
+        n_days = 300
+        start_date = date(2024, 1, 2)
+        dates = pd.bdate_range(start_date, periods=n_days)
+
+        stock_data = {}
+        for ticker in ["AAPL", "MSFT"]:
+            closes = [100 + i * 0.1 for i in range(n_days)]
+            stock_data[ticker] = pd.DataFrame({
+                "raw_open": [c + 0.5 for c in closes],
+                "raw_high": [c + 1.0 for c in closes],
+                "raw_low": [c - 1.0 for c in closes],
+                "raw_close": closes,
+                "volume": 1_000_000.0,
+                "adj_close": closes,
+                "dividend": 0.0,
+                "split_ratio": 1.0,
+            }, index=pd.MultiIndex.from_arrays(
+                [dates.date, [ticker] * n_days],
+                names=["date", "ticker"]
+            ))
+
+        provider = _make_mock_provider(
+            universe=["AAPL", "MSFT"],
+            stock_data=stock_data,
+        )
+
+        result = run_backtest(
+            start=date(2024, 4, 1),
+            end=date(2024, 6, 30),
+            initial_cash=1_000_000.0,
+            config=config,
+            data_provider=provider,
+            profile=profile,
+        )
+
+        assert isinstance(result, BacktestResult)
+        assert isinstance(result.equity_curve, pd.DataFrame)

@@ -82,6 +82,9 @@ def _create_test_db() -> sqlite3.Connection:
         ("MSFT", "SP500", "2020-01-01", None),
         ("GOOG", "SP500", "2023-06-01", "2024-01-03"),
         ("TSLA", "SP500", "2023-01-01", None),
+        # CSI800 has a different set
+        ("600519", "CSI800", "2022-01-01", None),
+        ("000858", "CSI800", "2022-01-01", None),
     ]
     conn.executemany(
         "INSERT INTO index_constituents VALUES (?, ?, ?, ?)", universe_rows
@@ -218,6 +221,37 @@ class TestGetUniverse:
     def test_sorted_output(self, provider: SQLDataProvider) -> None:
         universe = provider.get_universe(date(2024, 1, 5))
         assert universe == sorted(universe)
+
+    def test_default_index_is_sp500(self, provider: SQLDataProvider) -> None:
+        """Calling without index_id should return SP500 constituents."""
+        universe = provider.get_universe(date(2024, 1, 2))
+        assert "AAPL" in universe
+        assert "600519" not in universe
+
+    def test_csi800_universe(self, provider: SQLDataProvider) -> None:
+        """Passing index_id='CSI800' should return CSI800 constituents."""
+        universe = provider.get_universe(date(2024, 1, 2), index_id="CSI800")
+        assert "600519" in universe
+        assert "000858" in universe
+        assert "AAPL" not in universe
+
+    def test_index_id_cache_invalidation(self, provider: SQLDataProvider) -> None:
+        """Switching index_id should rebuild the PIT index."""
+        # First call builds SP500 cache
+        sp = provider.get_universe(date(2024, 1, 2), index_id="SP500")
+        assert provider._pit_index_id == "SP500"
+        assert "AAPL" in sp
+
+        # Switch to CSI800 — cache should rebuild
+        csi = provider.get_universe(date(2024, 1, 2), index_id="CSI800")
+        assert provider._pit_index_id == "CSI800"
+        assert "600519" in csi
+        assert "AAPL" not in csi
+
+        # Switch back to SP500 — should rebuild again
+        sp2 = provider.get_universe(date(2024, 1, 2), index_id="SP500")
+        assert provider._pit_index_id == "SP500"
+        assert "AAPL" in sp2
 
 
 # ---------------------------------------------------------------------------

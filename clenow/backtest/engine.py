@@ -431,8 +431,10 @@ def run_backtest(
         valuation_tickers = list(set(order_tickers) | set(position_tickers))
 
         if valuation_tickers:
+            # 15 days covers CN Spring Festival / Golden Week; 5 was too short
+            exec_lookback = execution_date - timedelta(days=15)
             exec_prices = data_provider.load_prices(
-                valuation_tickers, execution_date, execution_date
+                valuation_tickers, exec_lookback, execution_date
             )
         else:
             exec_prices = _empty_prices_frame()
@@ -450,7 +452,24 @@ def run_backtest(
                 dv = recent["volume"] * recent["raw_close"]
                 adv_data[ticker] = float(dv.mean())
 
-            executor = SimulatedExecutor(price_data=exec_prices, adv_data=adv_data)
+            # Build stocks_meta for price-limit resolver (CN/HK need name)
+            stocks_meta_map: dict[str, str] = {}
+            if profile.price_limit_resolver is not None and order_tickers:
+                try:
+                    meta_df = data_provider.get_stocks_meta(order_tickers)
+                    if meta_df is not None and not meta_df.empty and "name" in meta_df.columns:
+                        stocks_meta_map = meta_df["name"].to_dict()
+                except AttributeError:
+                    pass  # Provider doesn't implement get_stocks_meta
+                except Exception as e:
+                    logger.warning("Failed to load stocks_meta for price-limit check: %s", e)
+
+            executor = SimulatedExecutor(
+                price_data=exec_prices,
+                adv_data=adv_data,
+                profile=profile,
+                stocks_meta=stocks_meta_map,
+            )
 
             # Submit orders, handling rejections
             sells = [o for o in orders if o.side == Side.SELL]

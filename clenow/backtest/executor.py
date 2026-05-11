@@ -78,9 +78,10 @@ class SimulatedExecutor:
         """Fill orders at raw_open price on execution_date.
 
         For each order:
-        1. Look up raw_open on the order's target_date.
-        2. Apply cost model via compute_cost.
-        3. If price is missing, raise OrderRejection (caller handles).
+        1. Check price-limit lock; if locked, raise OrderRejection.
+        2. Look up raw_open on the order's target_date.
+        3. Apply cost model via compute_cost.
+        4. If price is missing, raise OrderRejection (caller handles).
 
         Returns list of successful Fills. OrderRejection is raised per-order;
         the engine event loop catches it and records rejected orders.
@@ -88,6 +89,13 @@ class SimulatedExecutor:
         fills: list[Fill] = []
 
         for order in orders:
+            # Price-limit lock check
+            if self._is_price_limit_locked(order.ticker, order.target_date):
+                raise _OrderRejectionException(
+                    order.ticker,
+                    reason=f"price_limit_locked: {order.target_date}",
+                )
+
             fill_price = self._get_open_price(order.ticker, order.target_date)
 
             if fill_price is None:

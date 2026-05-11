@@ -75,6 +75,7 @@ class SynologyDataProvider:
 
         # PIT universe cache: built lazily on first get_universe call
         self._pit_index: dict[str, list[tuple[date, date | None]]] | None = None
+        self._pit_index_id: str | None = None
 
         if use_cache:
             cache_root = cache_dir or (Path.home() / ".clenow" / "cache")
@@ -159,7 +160,7 @@ class SynologyDataProvider:
             "raw_close", "volume", "adj_close", "dividend", "split_ratio",
         ]]
 
-    def get_universe(self, as_of: date) -> list[str]:
+    def get_universe(self, as_of: date, index_id: str = "SP500") -> list[str]:
         """Return available stocks as of as_of.
 
         Strategy:
@@ -167,9 +168,9 @@ class SynologyDataProvider:
         2. Fallback: use all tickers with price data around as_of
         """
         self._ensure_connection()
-        # First try PIT index
-        if self._pit_index is None:
-            self._build_pit_index()
+        # First try PIT index; rebuild if index_id changed
+        if self._pit_index is None or self._pit_index_id != index_id:
+            self._build_pit_index(index_id)
 
         if self._pit_index:
             tickers: list[str] = []
@@ -232,7 +233,7 @@ class SynologyDataProvider:
 
     # -- PIT universe ---------------------------------------------------------
 
-    def _build_pit_index(self) -> None:
+    def _build_pit_index(self, index_id: str = "SP500") -> None:
         """Build PIT index from constituent_changes and index_constituents.
 
         Strategy:
@@ -243,6 +244,7 @@ class SynologyDataProvider:
         """
         self._ensure_connection()
         self._pit_index: dict[str, list[tuple[date, date | None]]] = {}
+        self._pit_index_id = index_id
 
         # Step 1: Load constituent_changes (explicit add/remove events)
         changes_by_ticker: dict[str, list[tuple[str, date]]] = {}
@@ -250,10 +252,10 @@ class SynologyDataProvider:
             query = """
                 SELECT ticker, change_type, change_date
                 FROM constituent_changes
-                WHERE index_id = 'SP500'
+                WHERE index_id = %s
                 ORDER BY ticker, change_date
             """
-            df = pd.read_sql_query(query, self._conn)
+            df = pd.read_sql_query(query, self._conn, params=[index_id])
 
             if not df.empty:
                 for _, row in df.iterrows():
@@ -276,10 +278,10 @@ class SynologyDataProvider:
             query = """
                 SELECT ticker, snapshot_date
                 FROM index_constituents
-                WHERE index_id = 'SP500'
+                WHERE index_id = %s
                 ORDER BY ticker, snapshot_date
             """
-            df = pd.read_sql_query(query, self._conn)
+            df = pd.read_sql_query(query, self._conn, params=[index_id])
 
             if not df.empty:
                 for _, row in df.iterrows():
@@ -340,7 +342,7 @@ class SynologyDataProvider:
                 from datetime import timedelta
                 self._pit_index[ticker] = [(first_date, last_date + timedelta(days=1))]
 
-        logger.info("Built PIT index: %d tickers total", len(self._pit_index))
+        logger.info("Built PIT index for %s: %d tickers total", index_id, len(self._pit_index))
 
     def get_stocks_meta(self, tickers: list[str]) -> pd.DataFrame:
         """Returns DataFrame indexed by ticker with at least 'name' column."""

@@ -205,15 +205,16 @@ class SQLDataProvider:
             "raw_close", "volume", "adj_close", "dividend", "split_ratio",
         ]]
 
-    def get_universe(self, as_of: date) -> list[str]:
-        """Return SP500 constituents as of *as_of* (point-in-time).
+    def get_universe(self, as_of: date, index_id: str = "SP500") -> list[str]:
+        """Return index constituents as of *as_of* (point-in-time).
 
-        On the first call this loads ALL rows from index_constituents
-        (for index_id='SP500') and builds an in-memory index. Subsequent
-        calls are pure dictionary lookups — no DB hit.
+        On the first call (or when *index_id* changes) this loads ALL rows
+        from index_constituents for the given index and builds an in-memory
+        index.  Subsequent calls with the same *index_id* are pure dictionary
+        lookups — no DB hit.
         """
-        if self._pit_index is None:
-            self._build_pit_index()
+        if self._pit_index is None or self._pit_index_id != index_id:
+            self._build_pit_index(index_id)
 
         assert self._pit_index is not None  # for type checker
         tickers: list[str] = []
@@ -260,19 +261,21 @@ class SQLDataProvider:
 
     # -- PIT cache ----------------------------------------------------------
 
-    def _build_pit_index(self) -> None:
+    def _build_pit_index(self, index_id: str = "SP500") -> None:
         """Load all index_constituents rows and build an in-memory index."""
         query = """
             SELECT ticker, as_of_date, removed_date
             FROM index_constituents
-            WHERE index_id = 'SP500'
+            WHERE index_id = ?
         """
+        params = [index_id]
         try:
-            rows = pd.read_sql_query(query, self._conn)
+            rows = pd.read_sql_query(query, self._conn, params=params)
         except Exception as exc:
             raise DataAccessError(f"Failed to load universe data: {exc}") from exc
 
         self._pit_index: dict[str, list[tuple[date, date | None]]] = {}
+        self._pit_index_id = index_id
         for _, row in rows.iterrows():
             ticker = row["ticker"]
             as_of_date = date.fromisoformat(row["as_of_date"]) if isinstance(row["as_of_date"], str) else row["as_of_date"]

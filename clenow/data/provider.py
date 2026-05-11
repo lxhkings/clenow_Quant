@@ -19,8 +19,13 @@ class DataProvider(Protocol):
         """
         ...
 
-    def get_universe(self, as_of: date) -> list[str]:
-        """Return SP500 constituents as of the given date (point-in-time)."""
+    def get_universe(self, as_of: date, index_id: str = "SP500") -> list[str]:
+        """Return index constituents as of the given date (point-in-time).
+
+        Args:
+            as_of: Date for point-in-time lookup.
+            index_id: Index identifier (e.g. "SP500", "CSI800", "HSI").
+        """
         ...
 
     def get_index_prices(

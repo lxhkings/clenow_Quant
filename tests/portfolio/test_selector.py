@@ -225,9 +225,27 @@ class TestPriceFilter:
         provider = MagicMock()
         provider.get_index_prices.return_value = _bull_index()
 
+        # Explicit profile with min_price=5.0 and low ADV threshold
+        profile = MarketProfile(
+            name="TEST",
+            currency="USD",
+            universe_index_id="SP500",
+            regime_index_id="SP500",
+            annualization_days=252,
+            lot_size=1,
+            min_price=5.0,
+            min_adv_amount=1.0,
+            trading_calendar_name="NYSE",
+            cost_model=USCostModel(),
+            default_starting_capital=100_000,
+            regime_sma_window=5,
+        )
+
         all_prices = _passing_stock_all_prices("AAPL", price=5.0)
 
-        result = apply_filters(["AAPL"], all_prices, provider, as_of, config)
+        result = apply_filters(
+            ["AAPL"], all_prices, provider, as_of, config, profile=profile,
+        )
         assert result == ["AAPL"]
 
 
@@ -358,6 +376,128 @@ class TestEmptyInput:
         all_prices = pd.DataFrame()
         result = apply_filters([], all_prices, provider, as_of, config)
         assert result == []
+
+
+class TestProfileThresholds:
+    """Verify that min_price / min_adv are sourced from MarketProfile, not Config."""
+
+    def test_apply_filters_uses_profile_min_price(self):
+        """When profile.min_price=5, a stock at $3 is filtered out."""
+        as_of = date(2024, 6, 1)
+        config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+
+        provider = MagicMock()
+        provider.get_index_prices.return_value = _bull_index()
+
+        # Profile with min_price=5.0 (higher than config's 1.0)
+        profile = MarketProfile(
+            name="TEST",
+            currency="USD",
+            universe_index_id="SP500",
+            regime_index_id="SP500",
+            annualization_days=252,
+            lot_size=1,
+            min_price=5.0,
+            min_adv_amount=1.0,
+            trading_calendar_name="NYSE",
+            cost_model=USCostModel(),
+            default_starting_capital=100_000,
+            regime_sma_window=5,
+        )
+
+        # Stock at $3 — would pass config.min_price=1.0 but fail profile.min_price=5.0
+        n = N_STOCK
+        dates = pd.date_range("2024-05-01", periods=n, freq="D")
+        # Rising from 2 to 3.5 → latest close ~3.5, below profile min_price=5
+        closes = [2.0] * (n // 2) + [2.0 + i * 0.2 for i in range(n - n // 2)]
+        volumes = [1_000_000.0] * n
+        all_prices = _make_stock_all_prices("LOW", dates.tolist(), closes, volumes)
+
+        result = apply_filters(
+            ["LOW"], all_prices, provider, as_of, config,
+            current_positions=None, profile=profile,
+        )
+        assert "LOW" not in result
+
+    def test_apply_filters_uses_profile_min_adv(self):
+        """When profile.min_adv_amount=10M, a stock with $1M ADV is filtered out."""
+        as_of = date(2024, 6, 1)
+        config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+
+        provider = MagicMock()
+        provider.get_index_prices.return_value = _bull_index()
+
+        # Profile with min_adv_amount=10M (higher than config's 1.0)
+        profile = MarketProfile(
+            name="TEST",
+            currency="USD",
+            universe_index_id="SP500",
+            regime_index_id="SP500",
+            annualization_days=252,
+            lot_size=1,
+            min_price=1.0,
+            min_adv_amount=10_000_000,
+            trading_calendar_name="NYSE",
+            cost_model=USCostModel(),
+            default_starting_capital=100_000,
+            regime_sma_window=5,
+        )
+
+        # Stock with low volume → ADV = 50 * 10_000 = $500K, below $10M
+        all_prices = _passing_stock_all_prices("THIN", price=50.0, volume=10_000.0)
+
+        result = apply_filters(
+            ["THIN"], all_prices, provider, as_of, config,
+            current_positions=None, profile=profile,
+        )
+        assert "THIN" not in result
+
+    def test_profile_overrides_config_thresholds(self):
+        """Profile thresholds take precedence over config values."""
+        as_of = date(2024, 6, 1)
+        # Config allows penny stocks and thin liquidity
+        config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+
+        provider = MagicMock()
+        provider.get_index_prices.return_value = _bull_index()
+
+        # Profile requires $5 min price and $10M min ADV
+        profile = MarketProfile(
+            name="TEST",
+            currency="USD",
+            universe_index_id="SP500",
+            regime_index_id="SP500",
+            annualization_days=252,
+            lot_size=1,
+            min_price=5.0,
+            min_adv_amount=10_000_000,
+            trading_calendar_name="NYSE",
+            cost_model=USCostModel(),
+            default_starting_capital=100_000,
+            regime_sma_window=5,
+        )
+
+        # LOW: $3 stock with $3M ADV — passes config thresholds, fails profile
+        # HIGH: $50 stock with $50M ADV — passes both
+        n = N_STOCK
+        dates = pd.date_range("2024-05-01", periods=n, freq="D")
+
+        low_closes = [3.0] * (n // 2) + [3.0 + i * 0.1 for i in range(n - n // 2)]
+        low_volumes = [1_000_000.0] * n
+        low_data = _make_stock_all_prices("LOW", dates.tolist(), low_closes, low_volumes)
+
+        high_closes = [50.0] * (n // 2) + [55.0 + i * 0.5 for i in range(n - n // 2)]
+        high_volumes = [1_000_000.0] * n
+        high_data = _make_stock_all_prices("HIGH", dates.tolist(), high_closes, high_volumes)
+
+        all_prices = pd.concat([low_data, high_data])
+
+        result = apply_filters(
+            ["LOW", "HIGH"], all_prices, provider, as_of, config,
+            current_positions=None, profile=profile,
+        )
+        assert "LOW" not in result
+        assert "HIGH" in result
 
 
 class TestApplyFiltersUsesPreloadedPrices:
