@@ -4,28 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+Install dependencies:
+```bash
+pip install -e ".[dev]"
+```
+
 Run tests:
 ```bash
 pytest tests/ -q                              # All tests
-pytest tests/signals/test_clenow_score.py -v  # Single module
 pytest tests/ -x -q                           # Stop on first failure
+pytest tests/signals/test_clenow_score.py -v  # Single module
+pytest tests/signals/test_clenow_score.py::test_fn_name -v  # Single test
+pytest tests/ -k "cn" -v                      # By keyword
 ```
 
 Run backtest:
 ```bash
-python run_backtest.py                        # Default: 2022-2026, $100k, risk_factor=0.005
+python run_backtest.py                                         # US, 2022-2026, $100k
+python run_backtest.py --market cn --start 2023-01-01          # A股
+python run_backtest.py --market hk --risk-factor 0.01          # 港股, higher sizing
+python run_sector_backtest.py                                  # Sector rotation variant (1 per sector)
 ```
 
-Install dependencies:
+Live trading CLI (generate order list):
 ```bash
-pip install -e ".[dev]"                       # Install with dev dependencies
+python -m clenow.live --as-of 2026-05-08 --equity 100000 --market us
+python -m clenow.live --as-of 2026-05-08 --market cn --output orders.csv
+```
+
+Validate database:
+```bash
+python scripts/validate_db.py
 ```
 
 ## Architecture
 
 ### Core Design Principle
 
-**Backtest engine = Live engine.** `compute_target_portfolio` (engine.py:84-194) is a pure, deterministic function shared by both backtest and live CLI. Same code path, no branching. This ensures backtested decisions match live trading decisions.
+**Backtest engine = Live engine.** `compute_target_portfolio` in `clenow/backtest/engine.py` is a pure, deterministic function shared by both backtest and live CLI. Same code path, no branching. This ensures backtested decisions match live trading decisions.
 
 ### Strategy: Clenow Smooth Momentum
 
@@ -44,11 +60,11 @@ From "Stocks on the Move" by Andreas Clenow:
    - Default `risk_factor=0.001` (conservative), use `0.005` for meaningful positions
    - Single-stock cap: 5% of equity
 
-4. **Double exit rule** (CRITICAL, engine.py:168-177):
+4. **Double exit rule** (CRITICAL, engine.py):
    - Every rebalance: FIRST check existing positions for 100-day SMA break
    - THEN apply new top 20% list
    - Stock in top 20% but below 100 SMA → forced sell
-   - Regime filter (SP500 < 200 SMA): blocks NEW entries only
+   - Regime filter (index < 200 SMA): blocks NEW entries only
 
 ### Module Responsibilities
 
@@ -67,7 +83,7 @@ clenow/
 ### Data Flow
 
 ```
-get_universe(as_of) → compute_clenow_score + ATR for all → 
+get_universe(as_of) → compute_clenow_score + ATR for all →
 rank_by_score(top 20%) → apply_filters(regime/SMA/price/ADV) →
 compute_target_positions(ATR sizing) → TargetPortfolio
 ```
@@ -77,6 +93,8 @@ compute_target_positions(ATR sizing) → TargetPortfolio
 - `TargetPortfolio`: frozen, positions dict `{ticker: shares}`
 - `Position`: mutable, tracks entry_price, entry_date, atr_at_entry
 - `DataProvider`: Protocol — any DB/broker implementing `load_prices`, `get_universe`
+- `Config`: frozen dataclass with strategy parameters; `market` field drives profile lookup
+- `MarketProfile`: frozen registry of per-market constants (lot size, cost model, calendar, thresholds)
 
 ### Performance Pattern
 
@@ -89,12 +107,6 @@ Three markets supported via `--market` flag:
 - `cn`: CSI800 universe, XSHG calendar, CNY costs, 100-share lots, ST filter, 涨跌停 detection, suspension/delisting distinction
 - `hk`: HSI universe, XHKG calendar, HKD costs, 100-share lots
 
-Run:
-```bash
-python run_backtest.py --market cn --start 2023-01-01 --end 2026-05-01
-python run_backtest.py --market hk --start 2023-01-01 --end 2026-05-01
-```
-
 Each market runs independently — no cross-market portfolios or FX conversion. Market-specific constants live in `clenow/markets/profiles.py:PROFILES`. To add a fourth market: add an entry to PROFILES with appropriate `CostModel` impl (extend `clenow/markets/costs.py`).
 
 Data prerequisites per market (in Synology MariaDB):
@@ -105,6 +117,6 @@ Data prerequisites per market (in Synology MariaDB):
 
 ### Testing
 
-- 383 tests, 78% coverage
 - Hand-calculated fixtures in `tests/signals/` for score/ATR validation
 - Integration tests in `tests/backtest/test_lifecycle*.py` run full rebalance cycles (US, CN, HK)
+- Tests use `@pytest.mark.integration` for DB-dependent tests
