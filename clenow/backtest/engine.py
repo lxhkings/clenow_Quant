@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Literal
 
 import pandas as pd
 
@@ -578,6 +579,53 @@ def _apply_corporate_actions(
                         tracker.apply_dividend(ticker, float(div), row_date)
                     except Exception:
                         pass  # InvariantError if not in positions — ignore
+
+
+def _classify_inactive(
+    volume_history: pd.Series,
+    profile: "MarketProfile",
+) -> Literal["active", "suspended", "delisted"]:
+    """Classify a ticker's recent state from trailing volume zeros.
+
+    Trailing zero run length L:
+      L == 0:                                    active
+      L <= profile.delisting_threshold_days:     suspended (hold position, skip rebalance)
+      L > profile.delisting_threshold_days:      delisted (force close)
+    """
+    if len(volume_history) == 0:
+        return "delisted"
+
+    trailing_zeros = 0
+    for v in reversed(volume_history.tolist()):
+        if v == 0:
+            trailing_zeros += 1
+        else:
+            break
+
+    if trailing_zeros == 0:
+        return "active"
+    if trailing_zeros > profile.delisting_threshold_days:
+        return "delisted"
+    return "suspended"
+
+
+def get_suspended_tickers(
+    candidates: list[str],
+    all_prices: pd.DataFrame,
+    as_of: date,
+    profile: "MarketProfile",
+) -> set[str]:
+    """Return set of currently-suspended tickers from candidate list."""
+    suspended: set[str] = set()
+    for ticker in candidates:
+        try:
+            vol = all_prices.xs(ticker, level="ticker")["volume"].loc[:as_of]
+        except KeyError:
+            continue
+        state = _classify_inactive(vol.tail(profile.delisting_threshold_days + 5), profile)
+        if state == "suspended":
+            suspended.add(ticker)
+    return suspended
 
 
 def _detect_delistings(
