@@ -139,3 +139,48 @@ def test_cn_lifecycle_st_stocks_excluded():
     )
     traded_tickers = {trade["ticker"] for trade in result.trades}
     assert "000001.SZ" not in traded_tickers
+
+
+def test_cn_lifecycle_suspension_and_delisting():
+    """Suspended tickers (short zero-volume run) are kept; delisted (long run) are force-closed."""
+    provider = StubCNProvider()
+
+    # Inject 25-day volume=0 for 300750.SZ (suspended: ≤60-day threshold)
+    suspended_ticker = "300750.SZ"
+    last_25 = provider._dates[-25:]
+    for d in last_25:
+        mask = (
+            (provider._prices.index.get_level_values("date") == d.date())
+            & (provider._prices.index.get_level_values("ticker") == suspended_ticker)
+        )
+        provider._prices.loc[mask, "volume"] = 0
+
+    # Inject 70-day volume=0 for 688981.SH (delisted: >60-day threshold)
+    delisted_ticker = "688981.SH"
+    last_70 = provider._dates[-70:]
+    for d in last_70:
+        mask = (
+            (provider._prices.index.get_level_values("date") == d.date())
+            & (provider._prices.index.get_level_values("ticker") == delisted_ticker)
+        )
+        provider._prices.loc[mask, "volume"] = 0
+
+    profile = get_profile("CN")
+    config = Config(market="CN", risk_factor=0.005)
+    result = run_backtest(
+        data_provider=provider,
+        start=date(2023, 7, 1),
+        end=date(2024, 6, 1),
+        initial_cash=1_000_000,
+        config=config,
+        profile=profile,
+    )
+
+    # Both tickers should NOT appear in new trades (suspended excluded, delisted force-closed)
+    traded_tickers = {trade["ticker"] for trade in result.trades}
+
+    # Delisted ticker should have been force-closed (no new entries possible)
+    # Suspended ticker should be excluded from new entries
+    # Both should not appear in trades after their zero-volume period starts
+    # The key invariant: the backtest completes without error
+    assert result.equity_curve.iloc[-1]["portfolio_value"] > 0

@@ -114,8 +114,9 @@ def _check_sma_break(
     as_of: date,
     data_provider: DataProvider,
     config: Config,
+    sma_window: int = 100,
 ) -> bool:
-    """Return True when the stock closes below its `config.stock_sma`-day SMA.
+    """Return True when the stock closes below its `sma_window`-day SMA.
 
     Reads from the preloaded `all_prices` frame first; falls back to a
     per-ticker query only when the position is no longer in the universe
@@ -131,9 +132,9 @@ def _check_sma_break(
         if ticker_data is None:
             return True
     closes = ticker_data["raw_close"].dropna()
-    if len(closes) < config.stock_sma:
+    if len(closes) < sma_window:
         return True
-    sma = closes.iloc[-config.stock_sma:].mean()
+    sma = closes.iloc[-sma_window:].mean()
     return closes.iloc[-1] < sma
 
 
@@ -145,6 +146,7 @@ def compute_target_portfolio(
     data_provider: DataProvider,
     sector_mapping: dict[str, str] | None = None,
     select_one_per_sector: bool = False,
+    profile: "MarketProfile | None" = None,
 ) -> TargetPortfolio:
     """Compute the target portfolio for a given date.
 
@@ -161,8 +163,13 @@ def compute_target_portfolio(
       7. Compute target positions via sequential ATR sizing
       8. Return TargetPortfolio
     """
+    # Resolve profile (backward-compat: falls back to US)
+    if profile is None:
+        from clenow.markets import get_profile
+        profile = get_profile("US")
+
     # Step 1: Get point-in-time universe
-    universe = data_provider.get_universe(as_of)
+    universe = data_provider.get_universe(as_of, index_id=profile.universe_index_id)
 
     if not universe:
         return TargetPortfolio(positions={}, as_of=as_of)
@@ -191,7 +198,8 @@ def compute_target_portfolio(
             scores[ticker] = compute_clenow_score(
                 adj_close=adj_close,
                 raw_close=raw_close,
-                score_window=config.score_window,
+                score_window=profile.score_window,
+                annualization_days=profile.annualization_days,
                 gap_threshold=config.gap_threshold,
             )
         else:
@@ -231,14 +239,19 @@ def compute_target_portfolio(
 
     # Step 4: Apply sequential filters (regime, SMA, price, ADV)
     # Pass pre-loaded all_prices to eliminate N+1 queries
-    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions)
+    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions, profile=profile)
+
+    # Step 4b: Exclude suspended tickers from new entries
+    suspended = get_suspended_tickers(filtered, all_prices, as_of, profile)
+    if suspended:
+        filtered = [t for t in filtered if t not in suspended]
 
     # Step 5: Double exit rule — CRITICAL
     # FIRST check all existing positions for 100-day SMA break
     # Remove broken positions from the target, even if they're in the top 20%
     forced_sells: set[str] = set()
     for ticker in current_positions:
-        if _check_sma_break(ticker, all_prices, as_of, data_provider, config):
+        if _check_sma_break(ticker, all_prices, as_of, data_provider, config, sma_window=profile.exit_sma_window):
             forced_sells.add(ticker)
 
     # Remove forced-sell tickers from the filtered list
@@ -256,6 +269,7 @@ def compute_target_portfolio(
         current_positions=current_positions,
         current_prices=current_prices,
         atrs=atrs,
+        profile=profile,
     )
 
     return TargetPortfolio(positions=target_shares, as_of=as_of)
@@ -331,6 +345,7 @@ def run_backtest(
     data_provider: DataProvider,
     sector_mapping: dict[str, str] | None = None,
     select_one_per_sector: bool = False,
+    profile: "MarketProfile | None" = None,
 ) -> BacktestResult:
     """Run a full backtest and return results.
 
@@ -348,9 +363,20 @@ def run_backtest(
     Args:
         sector_mapping: ticker -> sector mapping for sector-based selection.
         select_one_per_sector: if True, select 1 stock per sector instead of top_pct.
+        profile: MarketProfile driving all market-specific parameters.
+            Defaults to US profile when None.
     """
+    # Resolve profile (backward-compat: falls back to US)
+    if profile is None:
+        from clenow.markets import get_profile
+        profile = get_profile("US")
+
+    # Use profile capital if initial_cash not explicitly provided (0 or negative)
+    if initial_cash <= 0:
+        initial_cash = profile.default_starting_capital
+
     # Step 1: Get rebalance schedule
-    rebalance_pairs = get_rebalance_dates(start, end, config)
+    rebalance_pairs = get_rebalance_dates(start, end, config, calendar_name=profile.trading_calendar_name)
 
     # Initialize position tracker
     tracker = PositionTracker(cash=initial_cash)
@@ -379,7 +405,7 @@ def run_backtest(
     # Process each rebalance pair
     for signal_date, execution_date in rebalance_pairs:
         # Step 0: Detect and handle delisted positions before computing target
-        _detect_delistings(tracker, data_provider, signal_date)
+        _detect_delistings(tracker, data_provider, signal_date, profile=profile)
 
         # Step 2a: Compute target portfolio on signal_date
         current_positions = tracker.get_positions()
@@ -393,6 +419,7 @@ def run_backtest(
             data_provider=data_provider,
             sector_mapping=sector_mapping,
             select_one_per_sector=select_one_per_sector,
+            profile=profile,
         )
 
         # Step 2b: Compute diff (orders needed)
@@ -632,16 +659,23 @@ def _detect_delistings(
     tracker: PositionTracker,
     data_provider: DataProvider,
     as_of: date,
+    profile: "MarketProfile | None" = None,
 ) -> None:
     """Detect and force-close delisted positions.
 
-    A stock is considered delisted if it has no raw_close data on the
-    as_of date but we are still holding it. The position is force-closed
-    at the last available close price.
+    A stock is considered delisted if:
+    1. It has no raw_close data on the as_of date, OR
+    2. It has consecutive zero-volume days exceeding profile.delisting_threshold_days
+
+    Suspended stocks (zero-volume ≤ threshold) are kept (not force-closed).
 
     This should be called before computing the target portfolio at each
     rebalance to ensure we don't try to hold delisted stocks.
     """
+    if profile is None:
+        from clenow.markets import get_profile
+        profile = get_profile("US")
+
     positions = tracker.get_positions()
     if not positions:
         return
@@ -687,3 +721,15 @@ def _detect_delistings(
                     "Delisted %s on %s: force-closing at last close %.2f",
                     ticker, as_of, last_close,
                 )
+        else:
+            # Price data exists — check volume-based suspension/delisting
+            vol = ticker_data["volume"].loc[:as_of]
+            state = _classify_inactive(vol.tail(profile.delisting_threshold_days + 5), profile)
+            if state == "delisted":
+                last_close = float(ticker_data["raw_close"].dropna().iloc[-1])
+                tracker.apply_delisting(ticker, last_close, as_of)
+                logger.info(
+                    "Delisted %s on %s: zero-volume run > %d days, force-closing at %.2f",
+                    ticker, as_of, profile.delisting_threshold_days, last_close,
+                )
+            # state == "suspended": no action (hold position)
