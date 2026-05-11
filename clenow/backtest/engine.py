@@ -472,12 +472,56 @@ def run_backtest(
         )
 
     total = len(rebalance_pairs)
+
+    # ── One-time preload ───────────────────────────────────────────────────
+    # Collect full universe superset: get_universe() hits in-memory PIT dict
+    # after first build, so 4111 calls cost microseconds, not DB queries.
+    logger.info("Collecting universe superset for preload...")
+    all_universe_tickers: set[str] = set()
+    for _sd, _ in rebalance_pairs:
+        all_universe_tickers.update(
+            data_provider.get_universe(_sd, index_id=profile.universe_index_id)
+        )
+    global_price_start = start - _PRICE_LOOKBACK_CALENDAR - timedelta(days=60)
+    logger.info(
+        "Preloading prices for %d tickers from %s to %s...",
+        len(all_universe_tickers), global_price_start, end,
+    )
+    preloaded_prices = data_provider.load_prices(
+        sorted(all_universe_tickers), global_price_start, end
+    )
+    logger.info("Preload complete: %d rows", len(preloaded_prices))
+
+    # Precompute regime filter: one DB query → {date: bool} dict.
+    _sma_window = profile.regime_sma_window
+    _raw_index = data_provider.get_index_prices(
+        profile.regime_index_id,
+        start - timedelta(days=_sma_window * 2 + 60),
+        end,
+    )
+    if not _raw_index.empty:
+        _close_col = (
+            "raw_close" if "raw_close" in _raw_index.columns
+            else "close" if "close" in _raw_index.columns
+            else _raw_index.select_dtypes("number").columns[0]
+        )
+        bear_regime_cache: dict[date, bool] = _precompute_bear_regime(
+            _raw_index[_close_col].sort_index(), _sma_window
+        )
+    else:
+        bear_regime_cache = {}
+    logger.info("Regime cache: %d dates", len(bear_regime_cache))
+    # ── End preload ────────────────────────────────────────────────────────
+
     # Process each rebalance pair
     for i, (signal_date, execution_date) in enumerate(rebalance_pairs, 1):
         n_pos = len(tracker.get_positions())
         print(f"[{i}/{total}] signal={signal_date} exec={execution_date} pos={n_pos}", flush=True)
         # Step 0: Detect and handle delisted positions before computing target
-        _detect_delistings(tracker, data_provider, signal_date, profile=profile)
+        _detect_delistings(
+            tracker, data_provider, signal_date,
+            profile=profile, preloaded_prices=preloaded_prices,
+        )
 
         # Step 2a: Compute target portfolio on signal_date
         current_positions = tracker.get_positions()
@@ -492,6 +536,8 @@ def run_backtest(
             sector_mapping=sector_mapping,
             select_one_per_sector=select_one_per_sector,
             profile=profile,
+            preloaded_prices=preloaded_prices,
+            bear_regime_cache=bear_regime_cache,
         )
 
         # Step 2b: Compute diff (orders needed)
@@ -505,16 +551,18 @@ def run_backtest(
         if valuation_tickers:
             # 15 days covers CN Spring Festival / Golden Week; 5 was too short
             exec_lookback = execution_date - timedelta(days=15)
-            exec_prices = data_provider.load_prices(
-                valuation_tickers, exec_lookback, execution_date
+            exec_prices = _slice_prices(
+                preloaded_prices, valuation_tickers, exec_lookback, execution_date
             )
         else:
             exec_prices = _empty_prices_frame()
 
         if orders:
-            # Step 2c: Batched ADV lookup (Task 5 optimization)
+            # Step 2c: Batched ADV lookup — served from preloaded in-memory data
             adv_lookback_start = execution_date - timedelta(days=30)
-            adv_hist = data_provider.load_prices(order_tickers, adv_lookback_start, execution_date)
+            adv_hist = _slice_prices(
+                preloaded_prices, order_tickers, adv_lookback_start, execution_date
+            )
 
             for ticker in order_tickers:
                 td = _get_ticker_series(adv_hist, ticker)
@@ -606,7 +654,8 @@ def run_backtest(
         # Step 2e: Apply corporate actions between signal and execution dates
         # (split and dividend handling — uses data from price data)
         _apply_corporate_actions(
-            tracker, data_provider, signal_date, execution_date
+            tracker, data_provider, signal_date, execution_date,
+            preloaded_prices=preloaded_prices,
         )
 
         # Step 2f: Record equity inline (was second loop)
@@ -651,6 +700,7 @@ def _apply_corporate_actions(
     data_provider: DataProvider,
     signal_date: date,
     execution_date: date,
+    preloaded_prices: pd.DataFrame | None = None,
 ) -> None:
     """Apply corporate actions (splits, dividends) between two dates.
 
@@ -662,7 +712,10 @@ def _apply_corporate_actions(
         return
 
     tickers = list(positions.keys())
-    prices = data_provider.load_prices(tickers, signal_date, execution_date)
+    if preloaded_prices is not None:
+        prices = _slice_prices(preloaded_prices, tickers, signal_date, execution_date)
+    else:
+        prices = data_provider.load_prices(tickers, signal_date, execution_date)
 
     for ticker in tickers:
         ticker_data = _get_ticker_series(prices, ticker)
@@ -751,6 +804,7 @@ def _detect_delistings(
     data_provider: DataProvider,
     as_of: date,
     profile: "MarketProfile | None" = None,
+    preloaded_prices: pd.DataFrame | None = None,
 ) -> None:
     """Detect and force-close delisted positions.
 
@@ -774,7 +828,10 @@ def _detect_delistings(
     tickers = list(positions.keys())
 
     # Load price data for the current date to check availability
-    prices = data_provider.load_prices(tickers, as_of, as_of)
+    if preloaded_prices is not None:
+        prices = _slice_prices(preloaded_prices, tickers, as_of - timedelta(days=30), as_of)
+    else:
+        prices = data_provider.load_prices(tickers, as_of, as_of)
 
     for ticker in tickers:
         ticker_data = _get_ticker_series(prices, ticker)
@@ -783,7 +840,10 @@ def _detect_delistings(
         if ticker_data is None or ticker_data.empty:
             # Look back to find the last available close price
             lookback_start = as_of - timedelta(days=30)
-            hist_prices = data_provider.load_prices([ticker], lookback_start, as_of)
+            if preloaded_prices is not None:
+                hist_prices = _slice_prices(preloaded_prices, [ticker], lookback_start, as_of)
+            else:
+                hist_prices = data_provider.load_prices([ticker], lookback_start, as_of)
             hist_data = _get_ticker_series(hist_prices, ticker)
 
             if hist_data is None or hist_data.empty:
