@@ -51,6 +51,37 @@ _PRICE_LOOKBACK_DAYS = 300
 _PRICE_LOOKBACK_CALENDAR = timedelta(days=450)
 
 
+def _slice_prices(
+    preloaded: pd.DataFrame | None,
+    tickers: list[str],
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    """Extract date+ticker slice from a preloaded (date, ticker) MultiIndex DataFrame.
+
+    Args:
+        preloaded: DataFrame with MultiIndex (date, ticker) or None.
+        tickers: List of tickers to include in the slice.
+        start: Start date (inclusive).
+        end: End date (inclusive).
+
+    Returns:
+        DataFrame with matching rows, or empty DataFrame if preloaded is None/empty.
+    """
+    _empty = pd.DataFrame(columns=["raw_close", "adj_close", "raw_high", "raw_low", "volume"])
+    if preloaded is None or preloaded.empty:
+        return _empty
+    date_idx = preloaded.index.get_level_values("date")
+    ticker_idx = preloaded.index.get_level_values("ticker")
+    mask = (
+        (date_idx >= pd.Timestamp(start))
+        & (date_idx <= pd.Timestamp(end))
+        & (ticker_idx.isin(set(tickers)))
+    )
+    sliced = preloaded.loc[mask]
+    return sliced if not sliced.empty else _empty
+
+
 def _select_one_per_sector(
     scores: dict[str, float],
     sector_mapping: dict[str, str],

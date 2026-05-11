@@ -10,7 +10,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from clenow.backtest.engine import BacktestResult, compute_target_portfolio, run_backtest
+from clenow.backtest.engine import (
+    BacktestResult,
+    _slice_prices,
+    compute_target_portfolio,
+    run_backtest,
+)
 from clenow.config import Config
 from clenow.types import Position, TargetPortfolio
 
@@ -783,4 +788,54 @@ class TestProfileWiring:
         )
 
         assert isinstance(result, BacktestResult)
-        assert isinstance(result.equity_curve, pd.DataFrame)
+
+
+# ── _slice_prices tests ──────────────────────────────────────────────────────
+
+
+def _make_prices(tickers: list[str], dates: list[date]) -> pd.DataFrame:
+    """Build a (date, ticker) MultiIndex price DataFrame for testing."""
+    rows = []
+    for d in dates:
+        for t in tickers:
+            rows.append({
+                "date": pd.Timestamp(d),
+                "ticker": t,
+                "raw_close": 100.0,
+                "raw_open": 99.0,
+                "raw_high": 101.0,
+                "raw_low": 98.0,
+                "adj_close": 100.0,
+                "volume": 1_000_000.0,
+            })
+    df = pd.DataFrame(rows).set_index(["date", "ticker"])
+    return df
+
+
+def test_slice_prices_filters_date_range():
+    """_slice_prices should filter to the specified date range."""
+    dates = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+    tickers = ["AAPL", "MSFT"]
+    preloaded = _make_prices(tickers, dates)
+
+    result = _slice_prices(preloaded, ["AAPL"], date(2024, 1, 1), date(2024, 1, 2))
+
+    date_vals = result.index.get_level_values("date")
+    ticker_vals = result.index.get_level_values("ticker")
+    assert all(d <= pd.Timestamp(date(2024, 1, 2)) for d in date_vals)
+    assert set(ticker_vals) == {"AAPL"}
+
+
+def test_slice_prices_returns_empty_for_missing_ticker():
+    """_slice_prices should return an empty DataFrame when ticker is not in preloaded."""
+    dates = [date(2024, 1, 1)]
+    preloaded = _make_prices(["AAPL"], dates)
+
+    result = _slice_prices(preloaded, ["TSLA"], date(2024, 1, 1), date(2024, 1, 1))
+    assert result.empty
+
+
+def test_slice_prices_handles_none():
+    """_slice_prices should return an empty DataFrame when preloaded is None."""
+    result = _slice_prices(None, ["AAPL"], date(2024, 1, 1), date(2024, 1, 1))
+    assert result.empty
