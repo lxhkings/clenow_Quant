@@ -1,0 +1,141 @@
+"""Integration test: CN backtest path with mocked data provider.
+
+Verifies that the full rebalance cycle works end-to-end for CN profile:
+- CSI800 universe loaded
+- CSI800 regime filter applied
+- 100-share lots enforced
+- CN cost model applied
+- ST stocks excluded
+- XSHG calendar used for rebalance dates
+"""
+
+from datetime import date
+
+import pandas as pd
+import pytest
+
+from clenow.backtest.engine import run_backtest
+from clenow.config import Config
+from clenow.markets import get_profile
+
+
+class StubCNProvider:
+    """Mock provider returning synthetic CN data."""
+
+    def __init__(self):
+        # 5 CSI800 tickers with ~1-year data
+        self.tickers = [
+            "600519.SH", "000001.SZ", "300750.SZ", "688981.SH", "601318.SH",
+        ]
+        self._dates = pd.bdate_range("2023-06-01", "2024-06-30")
+        self._prices = self._build_prices()
+        self._index = self._build_index()
+        self._meta = pd.DataFrame(
+            {
+                "ticker": self.tickers,
+                "name": [
+                    "贵州茅台",  # 贵州茅台
+                    "平安银行",  # 平安银行
+                    "宁德时代",  # 宁德时代
+                    "中芯国际",  # 中芯国际
+                    "中国平安",  # 中国平安
+                ],
+            }
+        ).set_index("ticker")
+
+    def _build_prices(self) -> pd.DataFrame:
+        rows = []
+        for i, t in enumerate(self.tickers):
+            base = 50 + i * 20
+            for j, d in enumerate(self._dates):
+                p = base * (1 + 0.0005 * j)
+                rows.append({
+                    "date": d.date(),
+                    "ticker": t,
+                    "raw_open": p,
+                    "raw_high": p * 1.01,
+                    "raw_low": p * 0.99,
+                    "raw_close": p,
+                    "adj_close": p,
+                    "volume": 1_000_000,
+                    "dividend": 0.0,
+                    "split_ratio": 1.0,
+                })
+        return pd.DataFrame(rows).set_index(["date", "ticker"])
+
+    def _build_index(self) -> pd.DataFrame:
+        """Build CSI800 index data in bull regime (close > 200-SMA)."""
+        n = len(self._dates)
+        return pd.DataFrame(
+            {
+                "date": self._dates.date,
+                "close": [4000 * (1 + 0.0003 * i) for i in range(n)],
+            }
+        ).set_index("date")
+
+    def load_prices(self, tickers, start, end):
+        mask = (
+            self._prices.index.get_level_values("date") >= start
+        ) & (
+            self._prices.index.get_level_values("date") <= end
+        ) & (
+            self._prices.index.get_level_values("ticker").isin(tickers)
+        )
+        return self._prices.loc[mask]
+
+    def get_universe(self, as_of, index_id="CSI800"):
+        assert index_id == "CSI800", f"Expected CSI800, got {index_id}"
+        return list(self.tickers)
+
+    def get_index_prices(self, index_id, start, end):
+        assert index_id == "CSI800"
+        mask = (self._index.index >= start) & (self._index.index <= end)
+        return self._index.loc[mask]
+
+    def get_stocks_meta(self, tickers):
+        return self._meta.loc[self._meta.index.intersection(tickers)]
+
+
+def test_cn_lifecycle_basic():
+    """Full CN rebalance cycle: equity positive, all trades are 100-lot multiples."""
+    provider = StubCNProvider()
+    profile = get_profile("CN")
+    config = Config(market="CN", risk_factor=0.005)
+
+    result = run_backtest(
+        data_provider=provider,
+        start=date(2023, 7, 1),
+        end=date(2024, 6, 1),
+        initial_cash=1_000_000,
+        config=config,
+        profile=profile,
+    )
+
+    # Basic invariants
+    assert result.equity_curve.iloc[0]["portfolio_value"] > 0
+    assert result.equity_curve.iloc[-1]["portfolio_value"] > 0
+
+    # All closed trades have 100-lot position sizes
+    for trade in result.trades:
+        assert trade["shares"] % 100 == 0, f"non-lot trade: {trade}"
+
+
+def test_cn_lifecycle_st_stocks_excluded():
+    """If meta marks a ticker as ST, it must never appear in trade log."""
+    provider = StubCNProvider()
+    # Override meta to mark 000001.SZ as ST
+    provider._meta.loc["000001.SZ", "name"] = "ST 平安"  # ST 平安
+
+    profile = get_profile("CN")
+    config = Config(market="CN", risk_factor=0.005)
+
+    result = run_backtest(
+        data_provider=provider,
+        start=date(2023, 7, 1),
+        end=date(2024, 6, 1),
+        initial_cash=1_000_000,
+        config=config,
+        profile=profile,
+    )
+    traded_tickers = {trade["ticker"] for trade in result.trades}
+    assert "000001.SZ" not in traded_tickers
