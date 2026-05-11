@@ -1,18 +1,14 @@
-"""Transaction cost model — commission and slippage.
+"""Legacy compute_cost — thin shim over USCostModel for backward compat.
 
-Per-side cost model:
-  half_spread_bps = config.half_spread_bps (default 5)
-  slippage_bps = clip(
-      slippage_bps_per_pct_adv * (order_notional / adv_20_dollars) / 0.01,
-      slippage_bps_min,
-      slippage_bps_max,
-  )
-  commission = commission_per_share * shares
+New code should use Profile.cost_model.compute_side(...) directly.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from clenow.config import Config
+from clenow.markets.costs import USCostModel
 
 
 def compute_cost(
@@ -21,30 +17,21 @@ def compute_cost(
     shares: int,
     config: Config,
 ) -> tuple[float, float]:
-    """Compute per-side transaction costs.
+    """Per-side cost. Returns (commission_dollars, slippage_bps).
 
-    Args:
-        order_notional: Dollar value of the order (price * shares).
-        adv_20_dollars: 20-day average dollar volume for the ticker.
-        shares: Number of shares in the order.
-        config: System configuration with cost parameters.
-
-    Returns:
-        Tuple of (commission_dollars, slippage_bps).
+    Kept for backward compatibility with existing test suite. New code path
+    uses Config.profile.cost_model.compute_side(...).
     """
-    # Market-impact slippage: proportional to participation rate
-    if adv_20_dollars > 0:
-        participation_rate = order_notional / adv_20_dollars
-        raw_slippage = config.slippage_bps_per_pct_adv * (participation_rate / 0.01)
-    else:
-        # No ADV data: use max slippage as a conservative fallback
-        raw_slippage = config.slippage_bps_max
-
-    slippage_bps = max(
-        config.slippage_bps_min,
-        min(config.slippage_bps_max, raw_slippage),
+    model = USCostModel(
+        commission_per_share=Decimal(str(config.commission_per_share)),
+        half_spread_bps=config.half_spread_bps,
+        slippage_bps_per_pct_adv=config.slippage_bps_per_pct_adv,
+        slippage_bps_min=config.slippage_bps_min,
+        slippage_bps_max=config.slippage_bps_max,
     )
-
-    commission = config.commission_per_share * shares
-
-    return (commission, slippage_bps)
+    commission, slippage_bps = model.compute_legacy(
+        order_notional=order_notional,
+        adv_20_dollars=adv_20_dollars,
+        shares=shares,
+    )
+    return (float(commission), slippage_bps)
