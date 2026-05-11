@@ -12,6 +12,7 @@ class Side(Enum):
 
 class OrderType(Enum):
     MARKET = "market"
+    MARKET_ON_OPEN = "market_on_open"
 
 
 @dataclass(frozen=True)
