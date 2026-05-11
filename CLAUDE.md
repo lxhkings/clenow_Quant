@@ -82,8 +82,29 @@ compute_target_positions(ATR sizing) → TargetPortfolio
 
 Functions that process multiple tickers should accept a pre-loaded `all_prices` DataFrame (MultiIndex on date/ticker) rather than querying per ticker. See `apply_filters` in selector.py and `_check_sma_break` in engine.py for the pattern.
 
+### Multi-Market Support
+
+Three markets supported via `--market` flag:
+- `us` (default): SP500 universe, NYSE calendar, USD costs
+- `cn`: CSI800 universe, XSHG calendar, CNY costs, 100-share lots, ST filter, 涨跌停 detection, suspension/delisting distinction
+- `hk`: HSI universe, XHKG calendar, HKD costs, 100-share lots
+
+Run:
+```bash
+python run_backtest.py --market cn --start 2023-01-01 --end 2026-05-01
+python run_backtest.py --market hk --start 2023-01-01 --end 2026-05-01
+```
+
+Each market runs independently — no cross-market portfolios or FX conversion. Market-specific constants live in `clenow/markets/profiles.py:PROFILES`. To add a fourth market: add an entry to PROFILES with appropriate `CostModel` impl (extend `clenow/markets/costs.py`).
+
+Data prerequisites per market (in Synology MariaDB):
+- prices table with ticker suffix (`.SH`/`.SZ`/`.HK`) or bare (US)
+- index_constituents rows with matching `index_id` (SP500/CSI800/HSI)
+- index_prices rows with matching `index_id`
+- stocks table with `name` column (used for ST detection on CN)
+
 ### Testing
 
-- 293 tests, 76% coverage
+- 383 tests, 78% coverage
 - Hand-calculated fixtures in `tests/signals/` for score/ATR validation
-- Integration tests in `tests/backtest/test_lifecycle.py` run full rebalance cycles
+- Integration tests in `tests/backtest/test_lifecycle*.py` run full rebalance cycles (US, CN, HK)
