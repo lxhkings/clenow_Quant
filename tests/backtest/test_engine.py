@@ -814,7 +814,7 @@ def _make_prices(tickers: list[str], dates: list[date]) -> pd.DataFrame:
 
 def test_slice_prices_filters_date_range():
     """_slice_prices should filter to the specified date range."""
-    dates = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+    dates = [date(2023, 12, 31), date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
     tickers = ["AAPL", "MSFT"]
     preloaded = _make_prices(tickers, dates)
 
@@ -824,6 +824,7 @@ def test_slice_prices_filters_date_range():
     ticker_vals = result.index.get_level_values("ticker")
     assert all(d <= pd.Timestamp(date(2024, 1, 2)) for d in date_vals)
     assert set(ticker_vals) == {"AAPL"}
+    assert all(d >= pd.Timestamp(date(2024, 1, 1)) for d in date_vals)
 
 
 def test_slice_prices_returns_empty_for_missing_ticker():
@@ -839,3 +840,4 @@ def test_slice_prices_handles_none():
     """_slice_prices should return an empty DataFrame when preloaded is None."""
     result = _slice_prices(None, ["AAPL"], date(2024, 1, 1), date(2024, 1, 1))
     assert result.empty
+    assert list(result.columns) == ["raw_close", "adj_close", "raw_high", "raw_low", "volume"]
