@@ -553,3 +553,69 @@ class TestApplyFiltersUsesPreloadedPrices:
         assert result == ["AAA"]
         provider.load_prices.assert_not_called()
         provider.get_index_prices.assert_called_once()
+
+
+class TestBearRegimeCache:
+    """bear_regime_cache parameter skips DB calls for regime detection."""
+
+    def test_apply_filters_bear_regime_cache_skips_db(self):
+        """When bear_regime_cache is provided, get_index_prices is not called."""
+        as_of = date(2024, 6, 1)
+        config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+
+        mock_provider = MagicMock()
+        # If the cache is bypassed and DB is queried, this would be called
+        mock_provider.get_index_prices.side_effect = AssertionError(
+            "Should not query index prices when cache is provided"
+        )
+
+        # Build stock data that would pass all filters (but bear regime blocks entries)
+        n = N_STOCK
+        dates = pd.date_range("2024-05-01", periods=n, freq="D")
+        closes = [50.0 - 2.0] * (n // 2) + [50.0 + i * 0.5 for i in range(n - n // 2)]
+        volumes = [1_000_000.0] * n
+        all_prices = _make_stock_all_prices("AAPL", dates.tolist(), closes, volumes)
+
+        result = apply_filters(
+            ranked_tickers=["AAPL"],
+            all_prices=all_prices,
+            data_provider=mock_provider,
+            as_of=as_of,
+            config=config,
+            current_positions=None,
+            bear_regime_cache={as_of: True},  # bear market via cache
+        )
+
+        # In bear regime with no existing positions → all filtered
+        assert result == []
+        # Verify get_index_prices was never called
+        mock_provider.get_index_prices.assert_not_called()
+
+    def test_apply_filters_bull_regime_cache_allows_entries(self):
+        """When bear_regime_cache says bull (False), entries are allowed without DB call."""
+        as_of = date(2024, 6, 1)
+        config = Config(regime_sma=5, stock_sma=5, min_price=1.0, min_adv_dollars=1.0)
+
+        mock_provider = MagicMock()
+        # If the cache is bypassed and DB is queried, this would be called
+        mock_provider.get_index_prices.side_effect = AssertionError(
+            "Should not query index prices when cache is provided"
+        )
+
+        # Build stock data that passes all filters
+        all_prices = _passing_stock_all_prices("AAPL")
+
+        result = apply_filters(
+            ranked_tickers=["AAPL"],
+            all_prices=all_prices,
+            data_provider=mock_provider,
+            as_of=as_of,
+            config=config,
+            current_positions=None,
+            bear_regime_cache={as_of: False},  # bull market via cache
+        )
+
+        # In bull regime, AAPL passes all filters
+        assert "AAPL" in result
+        # Verify get_index_prices was never called
+        mock_provider.get_index_prices.assert_not_called()

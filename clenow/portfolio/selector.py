@@ -97,6 +97,7 @@ def apply_filters(
     config: Config,
     current_positions: dict[str, Position] | None = None,
     profile: MarketProfile | None = None,
+    bear_regime_cache: dict[date, bool] | None = None,
 ) -> list[str]:
     """Apply sequential filters preserving rank order.
 
@@ -116,6 +117,9 @@ def apply_filters(
         current_positions: existing positions (used for regime filter).
         profile: MarketProfile driving regime_index_id and regime_sma_window.
             Defaults to US profile when None.
+        bear_regime_cache: optional dict mapping date → is_bear (bool). When provided,
+            regime check uses cache lookup instead of querying data_provider.
+            Defaults to None (queries data_provider).
 
     Returns:
         Filtered list of tickers in original rank order.
@@ -128,12 +132,16 @@ def apply_filters(
         profile = get_profile(config.market if hasattr(config, "market") else "US")
 
     existing = set(current_positions.keys()) if current_positions else set()
-    bear = _is_bear_regime(
-        data_provider,
-        as_of,
-        profile.regime_index_id,
-        profile.regime_sma_window,
-    )
+
+    if bear_regime_cache is not None:
+        bear = bear_regime_cache.get(as_of, False)
+    else:
+        bear = _is_bear_regime(
+            data_provider,
+            as_of,
+            profile.regime_index_id,
+            profile.regime_sma_window,
+        )
 
     # ST exclusion filter (CN markets only)
     if "st" in profile.universe_exclusion_filters:
