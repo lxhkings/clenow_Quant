@@ -95,6 +95,16 @@ class SynologyDataProvider:
         except Exception:
             self._conn = _connect(self._config)
 
+    def _read_sql(self, query: str, params: list | tuple | None = None) -> pd.DataFrame:
+        """Execute query via cursor, return DataFrame. Avoids pandas DBAPI2 warning."""
+        with self._conn.cursor() as cur:
+            cur.execute(query, params or ())
+            if cur.description is None:
+                return pd.DataFrame()
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+        return pd.DataFrame(rows, columns=columns)
+
     def load_prices(
         self, tickers: list[str], start: date, end: date
     ) -> pd.DataFrame:
@@ -137,7 +147,7 @@ class SynologyDataProvider:
         params = [*tickers, start.isoformat(), end.isoformat()]
 
         try:
-            df = pd.read_sql_query(query, self._conn, params=params)
+            df = self._read_sql(query, params)
         except Exception as exc:
             raise DataAccessError(f"Failed to load prices: {exc}") from exc
 
@@ -195,7 +205,7 @@ class SynologyDataProvider:
         params = [(as_of - timedelta(days=30)).isoformat(), as_of.isoformat()]
 
         try:
-            df = pd.read_sql_query(query, self._conn, params=params)
+            df = self._read_sql(query, params)
             if not df.empty:
                 tickers = df["ticker"].tolist()
                 logger.info("Using %d tickers with price data around %s", len(tickers), as_of)
@@ -221,7 +231,7 @@ class SynologyDataProvider:
         params = [index_id, start.isoformat(), end.isoformat()]
 
         try:
-            df = pd.read_sql_query(query, self._conn, params=params)
+            df = self._read_sql(query, params)
         except Exception as exc:
             raise DataAccessError(f"Failed to load index prices: {exc}") from exc
 
@@ -255,7 +265,7 @@ class SynologyDataProvider:
                 WHERE index_id = %s
                 ORDER BY ticker, change_date
             """
-            df = pd.read_sql_query(query, self._conn, params=[index_id])
+            df = self._read_sql(query, [index_id])
 
             if not df.empty:
                 for _, row in df.iterrows():
@@ -281,7 +291,7 @@ class SynologyDataProvider:
                 WHERE index_id = %s
                 ORDER BY ticker, snapshot_date
             """
-            df = pd.read_sql_query(query, self._conn, params=[index_id])
+            df = self._read_sql(query, [index_id])
 
             if not df.empty:
                 for _, row in df.iterrows():
