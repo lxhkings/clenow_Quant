@@ -394,3 +394,48 @@ class TestEdgeCases:
         # With window=70, 60 data points is insufficient
         score = compute_clenow_score(adj_close, raw_close, score_window=70)
         assert score == 0.0
+
+
+# ===========================================================================
+# 8. Parameterize annualization_days
+# ===========================================================================
+
+class TestAnnualizationDays:
+    def test_score_with_custom_annualization(self):
+        """Score formula: (exp(slope * annual) - 1) * R^2. Custom annual changes magnitude."""
+        # 90-day linear uptrend, 0.001 per day in log space
+        dates = pd.date_range("2023-01-01", periods=90, freq="D")
+        adj = pd.Series(np.exp(np.arange(90) * 0.001), index=dates)
+        raw = adj.copy()
+
+        score_252 = compute_clenow_score(adj_close=adj, raw_close=raw, annualization_days=252)
+        score_244 = compute_clenow_score(adj_close=adj, raw_close=raw, annualization_days=244)
+
+        # 252 produces higher annualized magnitude than 244
+        assert score_252 > score_244 > 0
+
+    def test_score_with_custom_window(self):
+        """Custom score_window changes regression input length."""
+        # Use a series with noise so different windows produce different slopes
+        adj_close = _make_series(120, 0.002, noise_std=0.005, seed=42)
+        raw_close = adj_close.copy()
+
+        score_90 = compute_clenow_score(adj_close=adj_close, raw_close=raw_close, score_window=90)
+        score_60 = compute_clenow_score(adj_close=adj_close, raw_close=raw_close, score_window=60)
+
+        # Both positive (uptrend), values differ due to different windows
+        assert score_90 > 0
+        assert score_60 > 0
+        assert score_90 != score_60
+
+    def test_default_annualization_preserves_behavior(self):
+        """Default annualization_days=252 should match existing hardcoded behavior."""
+        n = 90
+        daily_ret = 0.002
+        adj_close = _make_series(n, daily_ret, noise_std=0.0)
+        raw_close = adj_close.copy()
+
+        score_default = compute_clenow_score(adj_close, raw_close)
+        score_explicit = compute_clenow_score(adj_close, raw_close, annualization_days=252)
+
+        assert abs(score_default - score_explicit) < 1e-10

@@ -1,9 +1,10 @@
 """Clenow Smooth Momentum score calculation.
 
-Core formula: score = (exp(slope * 252) - 1) * R^2
+Core formula: score = (exp(slope * annualization_days) - 1) * R^2
 
 Where slope comes from a log-linear regression on adjusted close prices,
 and R^2 measures the smoothness (fit quality) of that trend.
+annualization_days defaults to 252 (US), use 244 for CN, 247 for HK.
 """
 
 import numpy as np
@@ -15,6 +16,7 @@ def compute_clenow_score(
     adj_close: pd.Series,
     raw_close: pd.Series,
     score_window: int = 90,
+    annualization_days: int = 252,
     gap_threshold: float = 0.15,
 ) -> float:
     """Compute the Clenow Smooth Momentum score for a price series.
@@ -27,6 +29,9 @@ def compute_clenow_score(
         Unadjusted close prices (used for gap / jump detection).
     score_window : int
         Number of trading days for the regression window (default 90).
+    annualization_days : int
+        Number of trading days per year for annualization (default 252 for US).
+        Use 244 for China, 247 for Hong Kong, etc.
     gap_threshold : float
         Maximum allowed single-day log return in raw_close before the
         window is zeroed out (default 0.15 = 15%).
@@ -74,9 +79,9 @@ def compute_clenow_score(
 
     slope, intercept, r, p_value, std_err = linregress(x, log_prices)
 
-    # Clenow score = (exp(slope * 252) - 1) * R^2
+    # Clenow score = (exp(slope * annualization_days) - 1) * R^2
     r_squared = r ** 2
-    annualized_return = np.exp(slope * 252) - 1
+    annualized_return = np.exp(slope * annualization_days) - 1
     score = annualized_return * r_squared
 
     return float(score)
