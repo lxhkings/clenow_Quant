@@ -852,8 +852,9 @@ def test_compute_target_portfolio_with_preloaded_prices():
     )
 
     assert isinstance(result, TargetPortfolio)
+    provider.load_prices.assert_not_called()
     # With bull regime preloaded, should have some positions
-    assert len(result.positions) >= 0
+    assert len(result.positions) > 0
 
 
 def test_compute_target_portfolio_without_preloaded_prices():
