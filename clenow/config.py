@@ -48,3 +48,12 @@ class Config:
 
     # Cash interest
     cash_interest_policy: CashInterestPolicy = CashInterestPolicy.ZERO
+
+    # Market selection
+    market: str = "US"
+
+    @property
+    def profile(self):
+        """Lazy market profile lookup. Avoids import cycles by deferring import."""
+        from clenow.markets import get_profile
+        return get_profile(self.market)
