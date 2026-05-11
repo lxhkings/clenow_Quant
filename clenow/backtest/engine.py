@@ -827,11 +827,13 @@ def _detect_delistings(
 
     tickers = list(positions.keys())
 
-    # Load price data for the current date to check availability
+    # Load price data with 30-day lookback for consistent delisting detection
+    # regardless of whether preloaded prices are available.
+    _delisting_start = as_of - timedelta(days=30)
     if preloaded_prices is not None:
-        prices = _slice_prices(preloaded_prices, tickers, as_of - timedelta(days=30), as_of)
+        prices = _slice_prices(preloaded_prices, tickers, _delisting_start, as_of)
     else:
-        prices = data_provider.load_prices(tickers, as_of, as_of)
+        prices = data_provider.load_prices(tickers, _delisting_start, as_of)
 
     for ticker in tickers:
         ticker_data = _get_ticker_series(prices, ticker)
