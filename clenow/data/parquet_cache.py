@@ -171,7 +171,17 @@ class ParquetCache:
         for ticker in tickers:
             path = self._ticker_path(ticker)
             if not path.exists():
-                logger.warning("Ticker %s parquet file missing; skipping manifest update", ticker)
+                if requested_range is None:
+                    logger.warning("Ticker %s parquet file missing; skipping manifest update", ticker)
+                    continue
+                min_d, max_d = requested_range
+                new_rows.append({
+                    "ticker": ticker,
+                    "min_date": min_d,
+                    "max_date": max_d,
+                    "row_count": 0,
+                    "updated_at": now,
+                })
                 continue
             df = pd.read_parquet(path, columns=["date"])
             if df.empty:
@@ -225,6 +235,7 @@ class ParquetCache:
                 batches.setdefault(rng, []).append(ticker)
 
         touched: set[str] = set()
+        empty: set[str] = set()
         # Track the union range across all gap batches so the manifest
         # records the full requested window (not just what the DB returned).
         overall_start = min(s for s, _e in batches)
@@ -233,18 +244,27 @@ class ParquetCache:
             tickers_sorted = sorted(tickers)
             df = self.db_fetcher(tickers_sorted, start, end)
             if df is None or df.empty:
-                logger.warning(
+                logger.debug(
                     "db_fetcher returned no rows for %d tickers %s..%s",
                     len(tickers_sorted), start, end,
                 )
+                empty.update(tickers_sorted)
                 continue
+            returned = set()
             for ticker, slice_df in df.groupby("ticker", sort=False):
                 self._write_ticker_atomic(str(ticker), slice_df)
                 touched.add(str(ticker))
+                returned.add(str(ticker))
+            empty.update(t for t in tickers_sorted if t not in returned)
 
         if touched:
             self._update_manifest_entries(
                 sorted(touched), requested_range=(overall_start, overall_end)
+            )
+        empty_only = empty - touched
+        if empty_only:
+            self._update_manifest_entries(
+                sorted(empty_only), requested_range=(overall_start, overall_end)
             )
 
     # ------------------------------------------------------------------

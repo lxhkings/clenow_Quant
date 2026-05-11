@@ -87,5 +87,12 @@ def get_rebalance_dates(
     if config.rebalance_freq == "biweekly" and len(pairs) > 1:
         # Keep every other pair (1st, 3rd, 5th, ...)
         pairs = pairs[::2]
+    elif config.rebalance_freq == "daily":
+        # Each trading day: signal=T, execution=T+1
+        daily_pairs: list[tuple[date, date]] = []
+        in_range = [d for d in trading_days if start <= d <= end]
+        for j in range(len(in_range) - 1):
+            daily_pairs.append((in_range[j], in_range[j + 1]))
+        return daily_pairs
 
     return pairs

@@ -39,7 +39,7 @@ def get_sector_mapping() -> dict[str, str]:
 
 
 def run_sector_backtest(
-    start: date = date(2022, 1, 1),
+    start: date = date(2010, 1, 1),
     end: date = date(2026, 5, 9),
     initial_capital: float = 100_000,
 ) -> BacktestResult:
