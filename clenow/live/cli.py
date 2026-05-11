@@ -26,6 +26,7 @@ from clenow.backtest.engine import _check_sma_break, compute_target_portfolio
 from clenow.config import Config
 from clenow.data.loader import SQLDataProvider
 from clenow.live.state import load_state
+from clenow.markets import MarketProfile, get_profile
 from clenow.types import Position
 
 
@@ -35,6 +36,7 @@ def generate_orders(
     config: Config,
     data_provider: SQLDataProvider,
     state_path: Path | None = None,
+    profile: MarketProfile | None = None,
 ) -> list[dict]:
     """Generate order list for the given date.
 
@@ -59,6 +61,7 @@ def generate_orders(
         current_cash=current_cash,
         config=config,
         data_provider=data_provider,
+        profile=profile,
     )
 
     # Load current prices for expected_price column
@@ -189,10 +192,17 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="State file path (default: ~/.clenow/positions.json)",
     )
+    parser.add_argument(
+        "--market",
+        default="us",
+        choices=["us", "cn", "hk"],
+        help="Market (default: us)",
+    )
 
     args = parser.parse_args(argv)
 
-    config = Config()
+    profile = get_profile(args.market)
+    config = Config(market=args.market.upper())
 
     if args.db:
         data_provider = SQLDataProvider(args.db)
@@ -207,13 +217,14 @@ def main(argv: list[str] | None = None) -> None:
 
     state_path = Path(args.state) if args.state else None
 
-    print(f"Computing orders for {args.as_of} ...")
+    print(f"Computing orders for {args.as_of} (market={args.market}) ...")
     orders = generate_orders(
         as_of=args.as_of,
         equity=args.equity,
         config=config,
         data_provider=data_provider,
         state_path=state_path,
+        profile=profile,
     )
 
     write_orders_csv(orders, args.output)
