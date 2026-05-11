@@ -73,11 +73,21 @@ def _slice_prices(
         return pd.DataFrame(columns=_COLS)
     date_idx = preloaded.index.get_level_values("date")
     ticker_idx = preloaded.index.get_level_values("ticker")
-    mask = (
-        (date_idx >= pd.Timestamp(start))
-        & (date_idx <= pd.Timestamp(end))
-        & (ticker_idx.isin(set(tickers)))
-    )
+    # Convert date_idx to dates if it contains Timestamps (handles both formats)
+    if date_idx.dtype == "object" and len(date_idx) > 0:
+        # Index has Python date objects — convert start/end to dates for comparison
+        mask = (
+            (date_idx >= start)
+            & (date_idx <= end)
+            & (ticker_idx.isin(set(tickers)))
+        )
+    else:
+        # Index has Timestamps — use Timestamp comparison
+        mask = (
+            (date_idx >= pd.Timestamp(start))
+            & (date_idx <= pd.Timestamp(end))
+            & (ticker_idx.isin(set(tickers)))
+        )
     sliced = preloaded.loc[mask]
     return sliced if not sliced.empty else preloaded.iloc[0:0]
 
@@ -201,6 +211,8 @@ def compute_target_portfolio(
     sector_mapping: dict[str, str] | None = None,
     select_one_per_sector: bool = False,
     profile: "MarketProfile | None" = None,
+    preloaded_prices: pd.DataFrame | None = None,
+    bear_regime_cache: dict[date, bool] | None = None,
 ) -> TargetPortfolio:
     """Compute the target portfolio for a given date.
 
@@ -230,7 +242,10 @@ def compute_target_portfolio(
 
     # Step 2: Compute score and ATR for each ticker
     price_start = as_of - _PRICE_LOOKBACK_CALENDAR
-    all_prices = data_provider.load_prices(universe, price_start, as_of)
+    if preloaded_prices is not None:
+        all_prices = _slice_prices(preloaded_prices, universe, price_start, as_of)
+    else:
+        all_prices = data_provider.load_prices(universe, price_start, as_of)
 
     scores: dict[str, float] = {}
     atrs: dict[str, float] = {}
@@ -293,7 +308,7 @@ def compute_target_portfolio(
 
     # Step 4: Apply sequential filters (regime, SMA, price, ADV)
     # Pass pre-loaded all_prices to eliminate N+1 queries
-    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions, profile=profile)
+    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions, profile=profile, bear_regime_cache=bear_regime_cache)
 
     # Step 4b: Exclude suspended tickers from new entries
     suspended = get_suspended_tickers(filtered, all_prices, as_of, profile)

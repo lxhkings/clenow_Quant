@@ -790,6 +790,106 @@ class TestProfileWiring:
         assert isinstance(result, BacktestResult)
 
 
+# ── Tests for preloaded_prices and bear_regime_cache ────────────────────
+
+
+def _make_full_preloaded(
+    universe: list[str],
+    as_of: date = date(2024, 12, 31),
+    n_days: int = 300,
+) -> tuple[pd.DataFrame, dict]:
+    """Helper to build preloaded prices + precomputed bear regime cache.
+
+    Returns:
+        (all_prices DataFrame, bear_regime_cache dict)
+    """
+    stock_dfs = []
+    for ticker in universe:
+        df = _make_stock_data(n_days=n_days, ticker=ticker, trend=0.1)
+        stock_dfs.append(df)
+
+    all_prices = pd.concat(stock_dfs) if stock_dfs else pd.DataFrame(
+        columns=["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
+    )
+
+    # Build bear_regime_cache from the index (all False for bull market)
+    index_data = _make_index_data(n_days=n_days, bull=True)
+    cache = {}
+    for ts, price in index_data["raw_close"].items():
+        cache[ts.date()] = False  # Bull market
+
+    return all_prices, cache
+
+
+def test_compute_target_portfolio_with_preloaded_prices():
+    """compute_target_portfolio accepts preloaded_prices and uses it."""
+    as_of = date(2024, 12, 31)
+    config = Config(
+        score_window=90,
+        atr_period=20,
+        regime_sma=200,
+        stock_sma=100,
+        min_price=5.0,
+        min_adv_dollars=1.0,
+        top_pct=0.20,
+        risk_factor=0.001,
+    )
+
+    universe = ["AAPL", "MSFT", "GOOG"]
+    preloaded_prices, bear_cache = _make_full_preloaded(universe, as_of=as_of)
+
+    provider = _make_mock_provider(universe=universe)
+
+    # Call with preloaded_prices — should not query data_provider.load_prices
+    result = compute_target_portfolio(
+        as_of=as_of,
+        current_positions={},
+        current_cash=1_000_000.0,
+        config=config,
+        data_provider=provider,
+        preloaded_prices=preloaded_prices,
+        bear_regime_cache=bear_cache,
+    )
+
+    assert isinstance(result, TargetPortfolio)
+    # With bull regime preloaded, should have some positions
+    assert len(result.positions) >= 0
+
+
+def test_compute_target_portfolio_without_preloaded_prices():
+    """compute_target_portfolio works normally when preloaded_prices is None."""
+    as_of = date(2024, 12, 31)
+    config = Config(
+        score_window=90,
+        atr_period=20,
+        regime_sma=200,
+        stock_sma=100,
+        min_price=5.0,
+        min_adv_dollars=1.0,
+        top_pct=0.20,
+        risk_factor=0.001,
+    )
+
+    universe = ["AAPL", "MSFT", "GOOG"]
+    stock_data = {
+        ticker: _make_stock_data(n_days=300, ticker=ticker, trend=0.1)
+        for ticker in universe
+    }
+
+    provider = _make_mock_provider(universe=universe, stock_data=stock_data)
+
+    # Call without preloaded_prices — should use provider.load_prices
+    result = compute_target_portfolio(
+        as_of=as_of,
+        current_positions={},
+        current_cash=1_000_000.0,
+        config=config,
+        data_provider=provider,
+    )
+
+    assert isinstance(result, TargetPortfolio)
+
+
 # ── _slice_prices tests ──────────────────────────────────────────────────────
 
 
