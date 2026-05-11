@@ -82,6 +82,29 @@ def _slice_prices(
     return sliced if not sliced.empty else preloaded.iloc[0:0]
 
 
+def _precompute_bear_regime(
+    index_prices: pd.Series,
+    sma_window: int,
+) -> dict[date, bool]:
+    """Pre-compute bear regime flag for every date in index_prices.
+
+    Returns {date: True_if_bear} only for dates where enough history
+    exists to compute the SMA (at least sma_window prior data points).
+    """
+    if index_prices.empty:
+        return {}
+
+    sma = index_prices.rolling(sma_window).mean()
+    result: dict[date, bool] = {}
+    for ts, price in index_prices.items():
+        sma_val = sma.get(ts)
+        if sma_val is None or pd.isna(sma_val):
+            continue
+        d = ts.date() if isinstance(ts, pd.Timestamp) else ts
+        result[d] = bool(price < sma_val)
+    return result
+
+
 def _select_one_per_sector(
     scores: dict[str, float],
     sector_mapping: dict[str, str],

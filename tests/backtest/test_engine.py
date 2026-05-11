@@ -843,3 +843,43 @@ def test_slice_prices_handles_none():
     result = _slice_prices(None, ["AAPL"], date(2024, 1, 1), date(2024, 1, 1))
     assert result.empty
     assert list(result.columns) == ["raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close", "dividend", "split_ratio"]
+
+
+# ── _precompute_bear_regime tests ────────────────────────────────────────────
+
+
+def test_precompute_bear_regime_marks_bear_dates():
+    """_precompute_bear_regime returns {date: True} when price < SMA."""
+    from clenow.backtest.engine import _precompute_bear_regime
+
+    n = 300
+    dates = pd.date_range("2023-01-01", periods=n, freq="B")
+    prices = pd.Series(np.linspace(200, 50, n), index=dates)
+    cache = _precompute_bear_regime(prices, sma_window=200)
+    last_date = dates[-1].date()
+    assert last_date in cache
+    assert cache[last_date] is True
+
+
+def test_precompute_bear_regime_marks_bull_dates():
+    """_precompute_bear_regime returns {date: False} when price >= SMA."""
+    from clenow.backtest.engine import _precompute_bear_regime
+
+    n = 300
+    dates = pd.date_range("2023-01-01", periods=n, freq="B")
+    prices = pd.Series(np.linspace(50, 200, n), index=dates)
+    cache = _precompute_bear_regime(prices, sma_window=200)
+    last_date = dates[-1].date()
+    assert last_date in cache
+    assert cache[last_date] is False
+
+
+def test_precompute_bear_regime_skips_dates_without_enough_history():
+    """_precompute_bear_regime omits dates where SMA cannot be computed."""
+    from clenow.backtest.engine import _precompute_bear_regime
+
+    n = 100
+    dates = pd.date_range("2023-01-01", periods=n, freq="B")
+    prices = pd.Series(np.ones(n) * 100.0, index=dates)
+    cache = _precompute_bear_regime(prices, sma_window=200)
+    assert len(cache) == 0
