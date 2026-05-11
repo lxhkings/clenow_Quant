@@ -184,3 +184,60 @@ def test_cn_lifecycle_suspension_and_delisting():
     # Both should not appear in trades after their zero-volume period starts
     # The key invariant: the backtest completes without error
     assert result.equity_curve.iloc[-1]["portfolio_value"] > 0
+
+
+def test_cn_lifecycle_price_limit_lock_defers_entry():
+    """Price-limit locked stock (open=high=low) should not get filled on that day."""
+    provider = StubCNProvider()
+    locked_ticker = "688981.SH"  # 科创板: 20% limit
+
+    # Find a date in the middle of the data to manipulate
+    # Pick 2024-03-15 (a Friday, likely a rebalance day)
+    lock_date_candidates = [d for d in provider._dates if d.year == 2024 and d.month == 3 and d.day == 15]
+    if not lock_date_candidates:
+        # Fallback: pick any date in March 2024
+        lock_date_candidates = [d for d in provider._dates if d.year == 2024 and d.month == 3]
+    lock_date = lock_date_candidates[0] if lock_date_candidates else provider._dates[len(provider._dates) // 2]
+
+    # Find previous trading day
+    lock_idx = list(provider._dates).index(lock_date)
+    if lock_idx < 1:
+        return  # Can't test without prev day
+    prev_date = provider._dates[lock_idx - 1]
+
+    # Get prev close
+    mask_prev = (
+        (provider._prices.index.get_level_values("date") == prev_date.date())
+        & (provider._prices.index.get_level_values("ticker") == locked_ticker)
+    )
+    prev_close = provider._prices.loc[mask_prev, "raw_close"].iloc[0]
+    new_price = prev_close * 1.20  # 20% limit-up
+
+    # Set today's OHL all to new_price (locked) and tiny volume
+    mask_lock = (
+        (provider._prices.index.get_level_values("date") == lock_date.date())
+        & (provider._prices.index.get_level_values("ticker") == locked_ticker)
+    )
+    provider._prices.loc[mask_lock, "raw_open"] = new_price
+    provider._prices.loc[mask_lock, "raw_high"] = new_price
+    provider._prices.loc[mask_lock, "raw_low"] = new_price
+    provider._prices.loc[mask_lock, "raw_close"] = new_price
+    provider._prices.loc[mask_lock, "volume"] = 100  # tiny volume
+
+    profile = get_profile("CN")
+    config = Config(market="CN", risk_factor=0.005)
+    result = run_backtest(
+        data_provider=provider,
+        start=date(2024, 3, 1),
+        end=date(2024, 4, 30),
+        initial_cash=1_000_000,
+        config=config,
+        profile=profile,
+    )
+
+    # No entry fill on lock_date for locked_ticker
+    fills_on_lock_date = [
+        e for e in result.trades
+        if e.get("ticker") == locked_ticker and e.get("entry_date") == lock_date.date()
+    ]
+    assert len(fills_on_lock_date) == 0, f"Expected no fill on locked day, got: {fills_on_lock_date}"
