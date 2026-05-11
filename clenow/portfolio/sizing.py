@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from math import floor
 
 from clenow.config import Config
 from clenow.types import Position
+
+
+def compute_shares_with_lot(raw_shares: float, lot_size: int) -> int:
+    """Floor raw shares to integer multiple of lot_size."""
+    if lot_size < 1:
+        raise ValueError(f"lot_size must be >= 1, got {lot_size}")
+    n_lots = math.floor(raw_shares / lot_size)
+    return n_lots * lot_size
 
 
 def compute_target_positions(
@@ -18,6 +27,7 @@ def compute_target_positions(
     current_positions: dict[str, Position],
     current_prices: dict[str, float],
     atrs: dict[str, float],
+    profile=None,
 ) -> dict[str, int]:
     """Compute target share counts via sequential ATR allocation.
 
@@ -46,10 +56,17 @@ def compute_target_positions(
         current_positions: current open positions.
         current_prices: mapping ticker -> current price.
         atrs: mapping ticker -> ATR in dollars/share.
+        profile: MarketProfile controlling lot_size. Defaults to US when None.
 
     Returns:
         Mapping of ticker -> target share count.
     """
+    if profile is None:
+        from clenow.markets import get_profile
+        profile = get_profile("US")
+
+    lot_size = profile.lot_size
+
     if not filtered_tickers:
         return {}
 
@@ -68,7 +85,9 @@ def compute_target_positions(
             continue  # defensive: illiquid/stopped stock
 
         price = current_prices[ticker]
-        target_shares = floor((equity * risk_factor) / atr_per_share)
+        target_shares = compute_shares_with_lot(
+            (equity * risk_factor) / atr_per_share, lot_size,
+        )
         if target_shares <= 0:
             continue
 
@@ -76,7 +95,9 @@ def compute_target_positions(
 
         # 5% single-stock cap (truncation at entry only)
         if position_value > max_position_pct * equity:
-            target_shares = floor(max_position_pct * equity / price)
+            target_shares = compute_shares_with_lot(
+                max_position_pct * equity / price, lot_size,
+            )
             if target_shares <= 0:
                 continue
             position_value = target_shares * price
