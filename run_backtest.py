@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
 
     profile = get_profile(args.market)
     capital = args.capital if args.capital is not None else profile.default_starting_capital
-    config = Config(market=args.market.upper(), risk_factor=args.risk_factor)
+    config = Config(market=args.market.upper(), risk_factor=args.risk_factor, rebalance_freq="weekly")
 
     dp = SynologyDataProvider()
 

@@ -59,6 +59,7 @@ def run_sector_backtest(
         risk_factor=0.02,  # Higher sizing (2% of equity risk per position)
         max_position_pct=0.12,  # 12% cap per stock (11 sectors → ~132% max in theory)
         top_pct=1.0,  # Don't filter by top_pct — we'll use sector selection
+        rebalance_freq="weekly",
     )
 
     # Run backtest
