@@ -6,13 +6,12 @@ experience.
 """
 
 import numpy as np
-import pandas as pd
 
 
 def compute_atr(
-    high: pd.Series,
-    low: pd.Series,
-    close: pd.Series,
+    high,
+    low,
+    close,
     period: int = 20,
 ) -> float:
     """Compute the Average True Range using Wilder's RMA.

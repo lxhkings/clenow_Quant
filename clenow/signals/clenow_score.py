@@ -8,7 +8,6 @@ annualization_days defaults to 252 (US), use 244 for CN, 247 for HK.
 """
 
 import numpy as np
-import pandas as pd
 from scipy.stats import linregress
 
 

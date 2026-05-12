@@ -321,9 +321,13 @@ def compute_target_portfolio(
 
     # Step 2: Scores, ATRs, current prices — use precomputed if available (fast path)
     if precomputed_scores is not None:
-        scores = dict(precomputed_scores.get(as_of, {}))
-        atrs = dict((precomputed_atrs or {}).get(as_of, {}))
-        current_prices = dict((precomputed_prices or {}).get(as_of, {}))
+        # Filter to PIT universe only — precomputed dicts contain all historical tickers
+        _date_scores = precomputed_scores.get(as_of, {})
+        _date_atrs   = (precomputed_atrs or {}).get(as_of, {})
+        _date_prices = (precomputed_prices or {}).get(as_of, {})
+        scores        = {t: _date_scores.get(t, 0.0) for t in universe}
+        atrs          = {t: _date_atrs.get(t, 0.0)   for t in universe}
+        current_prices = {t: _date_prices[t] for t in universe if t in _date_prices}
         # all_prices still needed for SMA/filter checks below
         price_start = as_of - _PRICE_LOOKBACK_CALENDAR
         if preloaded_prices is not None:
