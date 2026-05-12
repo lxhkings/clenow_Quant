@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 
 from clenow.backtest.executor import SimulatedExecutor
@@ -126,14 +127,12 @@ def _compute_ticker_metrics(
 ) -> tuple[str, dict[date, float], dict[date, float], dict[date, float]]:
     """Compute Clenow score, ATR, and current price for one ticker across all signal dates.
 
-    Designed for parallel dispatch via ThreadPoolExecutor. Each call is independent.
-
-    Returns:
-        (ticker, scores, atrs, current_prices) — all keyed by signal date.
+    Accepts pre-extracted numpy arrays — no pandas in the hot loop.
+    Uses np.searchsorted for O(log N) window slicing. GIL-releasing.
     """
     (
         ticker,
-        ticker_prices,
+        ticker_arrays,
         signal_dates,
         score_window,
         atr_period,
@@ -142,52 +141,52 @@ def _compute_ticker_metrics(
         lookback_calendar_days,
     ) = args
 
+    dates_np  = ticker_arrays["dates"]
+    adj_close = ticker_arrays["adj_close"]
+    raw_close = ticker_arrays["raw_close"]
+    raw_high  = ticker_arrays["raw_high"]
+    raw_low   = ticker_arrays["raw_low"]
+
     scores: dict[date, float] = {}
     atrs: dict[date, float] = {}
     current_prices: dict[date, float] = {}
 
-    for signal_date in signal_dates:
-        price_start = pd.Timestamp(signal_date - timedelta(days=lookback_calendar_days))
-        price_end = pd.Timestamp(signal_date)
-        try:
-            window = ticker_prices.loc[price_start:price_end]
-        except TypeError:
-            # Fallback for date-object index (tests)
-            mask = (ticker_prices.index >= price_start.date()) & (ticker_prices.index <= price_end.date())
-            window = ticker_prices.loc[mask]
+    lookback_td = np.timedelta64(lookback_calendar_days, "D")
 
-        if window.empty:
+    for signal_date in signal_dates:
+        end_ts   = np.datetime64(signal_date, "D")
+        start_ts = end_ts - lookback_td
+
+        lo = int(np.searchsorted(dates_np, start_ts, side="left"))
+        hi = int(np.searchsorted(dates_np, end_ts,   side="right"))
+
+        if hi - lo < 2:
             scores[signal_date] = 0.0
-            atrs[signal_date] = 0.0
+            atrs[signal_date]   = 0.0
             continue
 
-        adj_close = window["adj_close"].dropna() if "adj_close" in window.columns else pd.Series(dtype=float)
-        raw_close = window["raw_close"].dropna() if "raw_close" in window.columns else pd.Series(dtype=float)
+        adj_w  = adj_close[lo:hi]
+        raw_w  = raw_close[lo:hi]
+        high_w = raw_high[lo:hi]
+        low_w  = raw_low[lo:hi]
 
-        if len(adj_close) > 0 and len(raw_close) > 0:
-            scores[signal_date] = compute_clenow_score(
-                adj_close=adj_close,
-                raw_close=raw_close,
-                score_window=score_window,
-                annualization_days=annualization_days,
-                gap_threshold=gap_threshold,
-            )
-        else:
-            scores[signal_date] = 0.0
+        scores[signal_date] = compute_clenow_score(
+            adj_close=pd.Series(adj_w),
+            raw_close=pd.Series(raw_w),
+            score_window=score_window,
+            annualization_days=annualization_days,
+            gap_threshold=gap_threshold,
+        )
 
-        if all(col in window.columns for col in ["raw_high", "raw_low", "raw_close"]):
-            high = window["raw_high"].dropna()
-            low = window["raw_low"].dropna()
-            close = window["raw_close"].dropna()
-            if len(high) > 0 and len(low) > 0 and len(close) > 0:
-                atrs[signal_date] = compute_atr(high=high, low=low, close=close, period=atr_period)
-            else:
-                atrs[signal_date] = 0.0
-        else:
-            atrs[signal_date] = 0.0
+        atrs[signal_date] = compute_atr(
+            high=pd.Series(high_w),
+            low=pd.Series(low_w),
+            close=pd.Series(raw_w),
+            period=atr_period,
+        )
 
-        if "raw_close" in window.columns and len(raw_close) > 0:
-            current_prices[signal_date] = float(raw_close.iloc[-1])
+        if len(raw_w) > 0 and not np.isnan(raw_w[-1]):
+            current_prices[signal_date] = float(raw_w[-1])
 
     return ticker, scores, atrs, current_prices
 
@@ -596,20 +595,46 @@ def run_backtest(
         bear_regime_cache = {}
 
     # Parallel pre-compute Clenow scores + ATRs for all tickers × all signal dates.
+    # Pre-extract per-ticker numpy arrays BEFORE thread dispatch to eliminate
+    # pandas .xs()/.sort_index() from the parallel critical path.
     signal_dates = [sd for sd, _ in rebalance_pairs]
     _lookback_days = _PRICE_LOOKBACK_CALENDAR.days
-    _args = []
+
+    print("Extracting per-ticker numpy arrays...", flush=True)
+    _ticker_arrays: dict[str, dict] = {}
     for _ticker in sorted(all_universe_tickers):
         try:
-            _ticker_prices = preloaded_prices.xs(_ticker, level="ticker").sort_index()
+            td = preloaded_prices.xs(_ticker, level="ticker")
         except KeyError:
             continue
-        _args.append((
-            _ticker, _ticker_prices, signal_dates,
+        idx = td.index
+        if hasattr(idx, "to_numpy"):
+            dates_np = idx.to_numpy()
+            if dates_np.dtype != np.dtype("datetime64[D]"):
+                dates_np = dates_np.astype("datetime64[D]")
+        else:
+            dates_np = np.array([np.datetime64(d, "D") for d in idx])
+
+        _ticker_arrays[_ticker] = {
+            "dates":     dates_np,
+            "adj_close": td["adj_close"].to_numpy(dtype=float) if "adj_close" in td.columns else np.array([], dtype=float),
+            "raw_close": td["raw_close"].to_numpy(dtype=float) if "raw_close" in td.columns else np.array([], dtype=float),
+            "raw_high":  td["raw_high"].to_numpy(dtype=float)  if "raw_high"  in td.columns else np.array([], dtype=float),
+            "raw_low":   td["raw_low"].to_numpy(dtype=float)   if "raw_low"   in td.columns else np.array([], dtype=float),
+        }
+    print(f"Extracted {len(_ticker_arrays)} ticker arrays", flush=True)
+
+    _args = [
+        (
+            _ticker,
+            _ticker_arrays[_ticker],
+            signal_dates,
             profile.score_window, config.atr_period,
             profile.annualization_days, config.gap_threshold,
             _lookback_days,
-        ))
+        )
+        for _ticker in sorted(_ticker_arrays)
+    ]
 
     n_workers = min(os.cpu_count() or 1, len(_args))
     print(
