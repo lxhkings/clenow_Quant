@@ -439,3 +439,12 @@ class TestAnnualizationDays:
         score_explicit = compute_clenow_score(adj_close, raw_close, annualization_days=252)
 
         assert abs(score_default - score_explicit) < 1e-10
+
+
+def test_compute_clenow_score_accepts_numpy():
+    """compute_clenow_score accepts numpy arrays directly."""
+    n = 100
+    prices = np.linspace(100, 120, n)
+    result = compute_clenow_score(adj_close=prices, raw_close=prices, score_window=90)
+    assert isinstance(result, float)
+    assert result > 0.0

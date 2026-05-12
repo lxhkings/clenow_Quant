@@ -171,17 +171,17 @@ def _compute_ticker_metrics(
         low_w  = raw_low[lo:hi]
 
         scores[signal_date] = compute_clenow_score(
-            adj_close=pd.Series(adj_w),
-            raw_close=pd.Series(raw_w),
+            adj_close=adj_w,
+            raw_close=raw_w,
             score_window=score_window,
             annualization_days=annualization_days,
             gap_threshold=gap_threshold,
         )
 
         atrs[signal_date] = compute_atr(
-            high=pd.Series(high_w),
-            low=pd.Series(low_w),
-            close=pd.Series(raw_w),
+            high=high_w,
+            low=low_w,
+            close=raw_w,
             period=atr_period,
         )
 
