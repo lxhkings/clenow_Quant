@@ -71,9 +71,10 @@ def compute_target_positions(
         return {}
 
     equity = current_cash + sum(
-        pos.shares * pos.entry_price for pos in current_positions.values()
+        pos.shares * current_prices.get(ticker, pos.entry_price)
+        for ticker, pos in current_positions.items()
     )
-    available_cash = current_cash
+    available_cash = equity
     risk_factor = config.risk_factor
     max_position_pct = config.max_position_pct
 

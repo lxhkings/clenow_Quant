@@ -20,6 +20,7 @@ pytest tests/ -k "cn" -v                      # By keyword
 
 Run backtest:
 ```bash
+uv run python run_backtest.py --market us
 python run_backtest.py                                         # US, 2022-2026, $100k
 python run_backtest.py --market cn --start 2023-01-01          # A股
 python run_backtest.py --market hk --risk-factor 0.01          # 港股, higher sizing
