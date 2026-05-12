@@ -23,6 +23,8 @@ Double exit rule (CRITICAL):
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
@@ -74,24 +76,25 @@ def _slice_prices(
     """
     if preloaded is None or preloaded.empty:
         return pd.DataFrame(columns=_PRICE_COLUMNS)
-    date_idx = preloaded.index.get_level_values("date")
-    ticker_idx = preloaded.index.get_level_values("ticker")
-    # Convert date_idx to dates if it contains Timestamps (handles both formats)
-    if date_idx.dtype == "object" and len(date_idx) > 0:
-        # Index has Python date objects — convert start/end to dates for comparison
-        mask = (
-            (date_idx >= start)
-            & (date_idx <= end)
-            & (ticker_idx.isin(set(tickers)))
-        )
-    else:
-        # Index has Timestamps — use Timestamp comparison
-        mask = (
-            (date_idx >= pd.Timestamp(start))
-            & (date_idx <= pd.Timestamp(end))
-            & (ticker_idx.isin(set(tickers)))
-        )
-    sliced = preloaded.loc[mask]
+    # Use sorted MultiIndex for O(log N) date slicing, then filter tickers.
+    # Requires preloaded.sort_index() at load time (done once in run_backtest).
+    ticker_set = set(tickers)
+    try:
+        date_slice = preloaded.loc[
+            pd.IndexSlice[pd.Timestamp(start) : pd.Timestamp(end), :], :
+        ]
+    except (KeyError, TypeError):
+        # Fallback for test data with python date objects in the index
+        date_idx = preloaded.index.get_level_values("date")
+        ticker_idx = preloaded.index.get_level_values("ticker")
+        mask = (date_idx >= start) & (date_idx <= end) & (ticker_idx.isin(ticker_set))
+        sliced = preloaded.loc[mask]
+        return sliced if not sliced.empty else preloaded.iloc[0:0]
+    if date_slice.empty:
+        return preloaded.iloc[0:0]
+    sliced = date_slice.loc[
+        date_slice.index.get_level_values("ticker").isin(ticker_set)
+    ]
     return sliced if not sliced.empty else preloaded.iloc[0:0]
 
 
@@ -116,6 +119,77 @@ def _precompute_bear_regime(
         d = ts.date() if isinstance(ts, pd.Timestamp) else ts
         result[d] = bool(price < sma_val)
     return result
+
+
+def _compute_ticker_metrics(
+    args: tuple,
+) -> tuple[str, dict[date, float], dict[date, float], dict[date, float]]:
+    """Compute Clenow score, ATR, and current price for one ticker across all signal dates.
+
+    Designed for parallel dispatch via ThreadPoolExecutor. Each call is independent.
+
+    Returns:
+        (ticker, scores, atrs, current_prices) — all keyed by signal date.
+    """
+    (
+        ticker,
+        ticker_prices,
+        signal_dates,
+        score_window,
+        atr_period,
+        annualization_days,
+        gap_threshold,
+        lookback_calendar_days,
+    ) = args
+
+    scores: dict[date, float] = {}
+    atrs: dict[date, float] = {}
+    current_prices: dict[date, float] = {}
+
+    for signal_date in signal_dates:
+        price_start = pd.Timestamp(signal_date - timedelta(days=lookback_calendar_days))
+        price_end = pd.Timestamp(signal_date)
+        try:
+            window = ticker_prices.loc[price_start:price_end]
+        except TypeError:
+            # Fallback for date-object index (tests)
+            mask = (ticker_prices.index >= price_start.date()) & (ticker_prices.index <= price_end.date())
+            window = ticker_prices.loc[mask]
+
+        if window.empty:
+            scores[signal_date] = 0.0
+            atrs[signal_date] = 0.0
+            continue
+
+        adj_close = window["adj_close"].dropna() if "adj_close" in window.columns else pd.Series(dtype=float)
+        raw_close = window["raw_close"].dropna() if "raw_close" in window.columns else pd.Series(dtype=float)
+
+        if len(adj_close) > 0 and len(raw_close) > 0:
+            scores[signal_date] = compute_clenow_score(
+                adj_close=adj_close,
+                raw_close=raw_close,
+                score_window=score_window,
+                annualization_days=annualization_days,
+                gap_threshold=gap_threshold,
+            )
+        else:
+            scores[signal_date] = 0.0
+
+        if all(col in window.columns for col in ["raw_high", "raw_low", "raw_close"]):
+            high = window["raw_high"].dropna()
+            low = window["raw_low"].dropna()
+            close = window["raw_close"].dropna()
+            if len(high) > 0 and len(low) > 0 and len(close) > 0:
+                atrs[signal_date] = compute_atr(high=high, low=low, close=close, period=atr_period)
+            else:
+                atrs[signal_date] = 0.0
+        else:
+            atrs[signal_date] = 0.0
+
+        if "raw_close" in window.columns and len(raw_close) > 0:
+            current_prices[signal_date] = float(raw_close.iloc[-1])
+
+    return ticker, scores, atrs, current_prices
 
 
 def _select_one_per_sector(
@@ -216,6 +290,9 @@ def compute_target_portfolio(
     profile: "MarketProfile | None" = None,
     preloaded_prices: pd.DataFrame | None = None,
     bear_regime_cache: dict[date, bool] | None = None,
+    precomputed_scores: dict[date, dict[str, float]] | None = None,
+    precomputed_atrs: dict[date, dict[str, float]] | None = None,
+    precomputed_prices: dict[date, dict[str, float]] | None = None,
 ) -> TargetPortfolio:
     """Compute the target portfolio for a given date.
 
@@ -243,59 +320,66 @@ def compute_target_portfolio(
     if not universe:
         return TargetPortfolio(positions={}, as_of=as_of)
 
-    # Step 2: Compute score and ATR for each ticker
-    price_start = as_of - _PRICE_LOOKBACK_CALENDAR
-    if preloaded_prices is not None:
-        all_prices = _slice_prices(preloaded_prices, universe, price_start, as_of)
-    else:
-        all_prices = data_provider.load_prices(universe, price_start, as_of)
-
-    scores: dict[str, float] = {}
-    atrs: dict[str, float] = {}
-    current_prices: dict[str, float] = {}
-
-    for ticker in universe:
-        ticker_data = _get_ticker_series(all_prices, ticker)
-
-        if ticker_data is None or ticker_data.empty:
-            scores[ticker] = 0.0
-            atrs[ticker] = 0.0
-            continue
-
-        # Compute Clenow score (adj_close + raw_close)
-        adj_close = ticker_data["adj_close"].dropna() if "adj_close" in ticker_data.columns else pd.Series(dtype=float)
-        raw_close = ticker_data["raw_close"].dropna() if "raw_close" in ticker_data.columns else pd.Series(dtype=float)
-
-        if len(adj_close) > 0 and len(raw_close) > 0:
-            scores[ticker] = compute_clenow_score(
-                adj_close=adj_close,
-                raw_close=raw_close,
-                score_window=profile.score_window,
-                annualization_days=profile.annualization_days,
-                gap_threshold=config.gap_threshold,
-            )
+    # Step 2: Scores, ATRs, current prices — use precomputed if available (fast path)
+    if precomputed_scores is not None:
+        scores = dict(precomputed_scores.get(as_of, {}))
+        atrs = dict((precomputed_atrs or {}).get(as_of, {}))
+        current_prices = dict((precomputed_prices or {}).get(as_of, {}))
+        # all_prices still needed for SMA/filter checks below
+        price_start = as_of - _PRICE_LOOKBACK_CALENDAR
+        if preloaded_prices is not None:
+            all_prices = _slice_prices(preloaded_prices, universe, price_start, as_of)
         else:
-            scores[ticker] = 0.0
+            all_prices = data_provider.load_prices(universe, price_start, as_of)
+    else:
+        # Slow path: compute per-ticker (used by live CLI and tests without precompute)
+        price_start = as_of - _PRICE_LOOKBACK_CALENDAR
+        if preloaded_prices is not None:
+            all_prices = _slice_prices(preloaded_prices, universe, price_start, as_of)
+        else:
+            all_prices = data_provider.load_prices(universe, price_start, as_of)
 
-        # Compute ATR (raw high, low, close)
-        if all(col in ticker_data.columns for col in ["raw_high", "raw_low", "raw_close"]):
-            high = ticker_data["raw_high"].dropna()
-            low = ticker_data["raw_low"].dropna()
-            close = ticker_data["raw_close"].dropna()
-            if len(high) > 0 and len(low) > 0 and len(close) > 0:
-                atrs[ticker] = compute_atr(
-                    high=high, low=low, close=close, period=config.atr_period
+        scores: dict[str, float] = {}
+        atrs: dict[str, float] = {}
+        current_prices: dict[str, float] = {}
+
+        for ticker in universe:
+            ticker_data = _get_ticker_series(all_prices, ticker)
+
+            if ticker_data is None or ticker_data.empty:
+                scores[ticker] = 0.0
+                atrs[ticker] = 0.0
+                continue
+
+            adj_close = ticker_data["adj_close"].dropna() if "adj_close" in ticker_data.columns else pd.Series(dtype=float)
+            raw_close = ticker_data["raw_close"].dropna() if "raw_close" in ticker_data.columns else pd.Series(dtype=float)
+
+            if len(adj_close) > 0 and len(raw_close) > 0:
+                scores[ticker] = compute_clenow_score(
+                    adj_close=adj_close,
+                    raw_close=raw_close,
+                    score_window=profile.score_window,
+                    annualization_days=profile.annualization_days,
+                    gap_threshold=config.gap_threshold,
                 )
             else:
-                atrs[ticker] = 0.0
-        else:
-            atrs[ticker] = 0.0
+                scores[ticker] = 0.0
 
-        # Track current price (last raw_close)
-        if "raw_close" in ticker_data.columns:
-            rc = ticker_data["raw_close"].dropna()
-            if len(rc) > 0:
-                current_prices[ticker] = float(rc.iloc[-1])
+            if all(col in ticker_data.columns for col in ["raw_high", "raw_low", "raw_close"]):
+                high = ticker_data["raw_high"].dropna()
+                low = ticker_data["raw_low"].dropna()
+                close = ticker_data["raw_close"].dropna()
+                if len(high) > 0 and len(low) > 0 and len(close) > 0:
+                    atrs[ticker] = compute_atr(high=high, low=low, close=close, period=config.atr_period)
+                else:
+                    atrs[ticker] = 0.0
+            else:
+                atrs[ticker] = 0.0
+
+            if "raw_close" in ticker_data.columns:
+                rc = ticker_data["raw_close"].dropna()
+                if len(rc) > 0:
+                    current_prices[ticker] = float(rc.iloc[-1])
 
     # Step 3: Rank by score
     if select_one_per_sector:
@@ -491,6 +575,8 @@ def run_backtest(
     preloaded_prices = data_provider.load_prices(
         sorted(all_universe_tickers), global_price_start, end
     )
+    # Sort once for O(log N) loc slicing in _slice_prices
+    preloaded_prices = preloaded_prices.sort_index()
     logger.info("Preload complete: %d rows", len(preloaded_prices))
 
     # Precompute regime filter: one DB query → {date: bool} dict.
@@ -512,6 +598,40 @@ def run_backtest(
     else:
         bear_regime_cache = {}
     logger.info("Regime cache: %d dates", len(bear_regime_cache))
+
+    # Parallel pre-compute Clenow scores + ATRs for all tickers × all signal dates.
+    # ThreadPoolExecutor: numpy releases GIL so all 12 cores run concurrently.
+    signal_dates = [sd for sd, _ in rebalance_pairs]
+    _lookback_days = _PRICE_LOOKBACK_CALENDAR.days
+    _args = []
+    for _ticker in sorted(all_universe_tickers):
+        try:
+            _ticker_prices = preloaded_prices.xs(_ticker, level="ticker").sort_index()
+        except KeyError:
+            continue
+        _args.append((
+            _ticker, _ticker_prices, signal_dates,
+            profile.score_window, config.atr_period,
+            profile.annualization_days, config.gap_threshold,
+            _lookback_days,
+        ))
+
+    n_workers = min(os.cpu_count() or 1, len(_args))
+    logger.info("Pre-computing scores/ATRs for %d tickers using %d threads...", len(_args), n_workers)
+    with ThreadPoolExecutor(max_workers=n_workers) as _pool:
+        _results = list(_pool.map(_compute_ticker_metrics, _args))
+
+    # Build lookup tables: {signal_date: {ticker: value}}
+    precomputed_scores: dict[date, dict[str, float]] = {sd: {} for sd in signal_dates}
+    precomputed_atrs: dict[date, dict[str, float]] = {sd: {} for sd in signal_dates}
+    precomputed_prices_map: dict[date, dict[str, float]] = {sd: {} for sd in signal_dates}
+    for _ticker, _scores, _atrs, _prices in _results:
+        for _sd in signal_dates:
+            precomputed_scores[_sd][_ticker] = _scores.get(_sd, 0.0)
+            precomputed_atrs[_sd][_ticker] = _atrs.get(_sd, 0.0)
+            if _sd in _prices:
+                precomputed_prices_map[_sd][_ticker] = _prices[_sd]
+    logger.info("Pre-compute complete")
     # ── End preload ────────────────────────────────────────────────────────
 
     # Process each rebalance pair
@@ -539,6 +659,9 @@ def run_backtest(
             profile=profile,
             preloaded_prices=preloaded_prices,
             bear_regime_cache=bear_regime_cache,
+            precomputed_scores=precomputed_scores,
+            precomputed_atrs=precomputed_atrs,
+            precomputed_prices=precomputed_prices_map,
         )
 
         # Step 2b: Compute diff (orders needed)
