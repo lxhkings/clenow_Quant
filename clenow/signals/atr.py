@@ -35,47 +35,36 @@ def compute_atr(
         - insufficient data (< period + 1 bars)
         - resulting ATR < 0.01 (defensive against illiquid/stopped stocks)
     """
-    # Need at least period + 1 bars: `period` for the initial SMA plus
-    # one prior close for the first TR calculation.
     if len(high) < period + 1:
         return 0.0
 
-    # Align series by index and drop rows with any NaN
-    df = pd.DataFrame({"high": high, "low": low, "close": close})
-    df = df.dropna()
+    h = np.asarray(high, dtype=float)
+    l = np.asarray(low, dtype=float)
+    c = np.asarray(close, dtype=float)
 
-    if len(df) < period + 1:
+    # Drop rows where any of H/L/C is NaN
+    valid = ~(np.isnan(h) | np.isnan(l) | np.isnan(c))
+    h, l, c = h[valid], l[valid], c[valid]
+
+    if len(h) < period + 1:
         return 0.0
 
-    h = df["high"].values
-    l = df["low"].values
-    c = df["close"].values
+    # Vectorized True Range: max(H-L, |H-prevC|, |L-prevC|)
+    hl  = h[1:] - l[1:]
+    hpc = np.abs(h[1:] - c[:-1])
+    lpc = np.abs(l[1:] - c[:-1])
+    tr  = np.maximum(hl, np.maximum(hpc, lpc))
 
-    # True Range: max(H-L, |H-prevC|, |L-prevC|)
-    tr = np.empty(len(df) - 1, dtype=float)
-    for i in range(1, len(df)):
-        hl = h[i] - l[i]
-        hpc = abs(h[i] - c[i - 1])
-        lpc = abs(l[i] - c[i - 1])
-        tr[i - 1] = max(hl, hpc, lpc)
-
-    # Need at least `period` TR values for the initial SMA
     if len(tr) < period:
         return 0.0
 
-    # Wilder's RMA:
-    #   First value = SMA of first `period` TR values
-    #   Subsequent:  RMA[t] = (RMA[t-1] * (period - 1) + TR[t]) / period
-    rma = np.empty(len(tr), dtype=float)
-    rma[period - 1] = np.mean(tr[:period])
-
+    # Wilder's RMA: SMA init then recursive scalar loop
+    alpha_k = (period - 1) / period
+    rma = float(np.mean(tr[:period]))
     for i in range(period, len(tr)):
-        rma[i] = (rma[i - 1] * (period - 1) + tr[i]) / period
+        rma = rma * alpha_k + tr[i] / period
 
-    atr_value = float(rma[-1])
-
-    # Defensive: illiquid or stopped stocks may have near-zero ATR
-    if atr_value < 0.01:
+    if rma < 0.01:
         return 0.0
 
-    return atr_value
+    return rma
