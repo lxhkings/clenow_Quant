@@ -559,25 +559,22 @@ def run_backtest(
     total = len(rebalance_pairs)
 
     # ── One-time preload ───────────────────────────────────────────────────
-    # Collect full universe superset: get_universe() hits in-memory PIT dict
-    # after first build, so 4111 calls cost microseconds, not DB queries.
-    logger.info("Collecting universe superset for preload...")
+    print("Collecting universe superset...", flush=True)
     all_universe_tickers: set[str] = set()
     for _sd, _ in rebalance_pairs:
         all_universe_tickers.update(
             data_provider.get_universe(_sd, index_id=profile.universe_index_id)
         )
     global_price_start = start - _PRICE_LOOKBACK_CALENDAR - timedelta(days=60)
-    logger.info(
-        "Preloading prices for %d tickers from %s to %s...",
-        len(all_universe_tickers), global_price_start, end,
+    print(
+        f"Preloading {len(all_universe_tickers)} tickers {global_price_start} → {end}...",
+        flush=True,
     )
     preloaded_prices = data_provider.load_prices(
         sorted(all_universe_tickers), global_price_start, end
     )
-    # Sort once for O(log N) loc slicing in _slice_prices
     preloaded_prices = preloaded_prices.sort_index()
-    logger.info("Preload complete: %d rows", len(preloaded_prices))
+    print(f"Preload complete: {len(preloaded_prices):,} rows", flush=True)
 
     # Precompute regime filter: one DB query → {date: bool} dict.
     _sma_window = profile.regime_sma_window
@@ -597,10 +594,8 @@ def run_backtest(
         )
     else:
         bear_regime_cache = {}
-    logger.info("Regime cache: %d dates", len(bear_regime_cache))
 
     # Parallel pre-compute Clenow scores + ATRs for all tickers × all signal dates.
-    # ThreadPoolExecutor: numpy releases GIL so all 12 cores run concurrently.
     signal_dates = [sd for sd, _ in rebalance_pairs]
     _lookback_days = _PRICE_LOOKBACK_CALENDAR.days
     _args = []
@@ -617,7 +612,11 @@ def run_backtest(
         ))
 
     n_workers = min(os.cpu_count() or 1, len(_args))
-    logger.info("Pre-computing scores/ATRs for %d tickers using %d threads...", len(_args), n_workers)
+    print(
+        f"Pre-computing scores/ATRs: {len(_args)} tickers × {len(signal_dates)} dates "
+        f"({n_workers} threads)...",
+        flush=True,
+    )
     with ThreadPoolExecutor(max_workers=n_workers) as _pool:
         _results = list(_pool.map(_compute_ticker_metrics, _args))
 
@@ -631,7 +630,7 @@ def run_backtest(
             precomputed_atrs[_sd][_ticker] = _atrs.get(_sd, 0.0)
             if _sd in _prices:
                 precomputed_prices_map[_sd][_ticker] = _prices[_sd]
-    logger.info("Pre-compute complete")
+    print("Pre-compute complete. Starting rebalance loop...", flush=True)
     # ── End preload ────────────────────────────────────────────────────────
 
     # Process each rebalance pair
