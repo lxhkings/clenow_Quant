@@ -5,27 +5,28 @@ code path shared by both backtest and live CLI.
 
 Steps:
   1. Get PIT universe
-  2. Compute Clenow score and ATR for each ticker
-  3. Rank by score (top 20%)
-  4. Apply filters (regime, SMA, price, ADV)
-  5. Compute current prices
-  6. Compute target positions via sequential ATR sizing
+  2. Compute score and ATR for each ticker (via Strategy)
+  3. Rank by score (via Strategy)
+  4. Apply entry filters (via Strategy)
+  5. Check exit signals (via Strategy)
+  6. Compute target positions via Strategy sizing
   7. Return TargetPortfolio
 
 Double exit rule (CRITICAL):
-  - Every rebalance: FIRST check existing positions for 100-day SMA break
-  - THEN use the new top 20% list to decide which to keep
-  - Even if a stock is in the top 20%, if it breaks its 100-day SMA, sell it
-  - Regime filter (SP500 < 200 SMA): no NEW positions, existing positions
+  - Every rebalance: FIRST check existing positions for exit signal
+  - THEN use the filtered list to decide which to keep
+  - For Clenow: exit_signal = close < 100-day SMA
+  - Regime filter (index < 200 SMA): no NEW positions, existing positions
     only sold on their own exit triggers
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
@@ -35,13 +36,12 @@ from clenow.config import Config
 from clenow.data.provider import DataProvider
 from clenow.data.utils import get_ticker_series as _get_ticker_series
 from clenow.errors import OrderRejection
-from clenow.portfolio.ranker import rank_by_score
-from clenow.portfolio.selector import apply_filters
-from clenow.portfolio.sizing import compute_target_positions
-from clenow.portfolio.state import PositionTracker
 from clenow.signals.atr import compute_atr
-from clenow.signals.clenow_score import compute_clenow_score
 from clenow.types import Order, OrderType, Position, Side, TargetPortfolio
+
+if TYPE_CHECKING:
+    from clenow.markets.profiles import MarketProfile
+    from clenow.strategy.base import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -49,52 +49,6 @@ logger = logging.getLogger(__name__)
 _PRICE_LOOKBACK_DAYS = 300
 # Approximate calendar days for 300 trading days (~420 calendar days)
 _PRICE_LOOKBACK_CALENDAR = timedelta(days=450)
-
-
-def _select_one_per_sector(
-    scores: dict[str, float],
-    sector_mapping: dict[str, str],
-) -> list[str]:
-    """Select highest-score stock from each sector.
-
-    Args:
-        scores: ticker -> Clenow score mapping.
-        sector_mapping: ticker -> sector mapping.
-
-    Returns:
-        List of tickers (one per sector) sorted by score descending.
-    """
-    # Group by sector
-    by_sector: dict[str, list[tuple[str, float]]] = {}
-    unmapped = []
-    for ticker, score in scores.items():
-        if score <= 0:
-            continue
-        sector = sector_mapping.get(ticker)
-        if sector:
-            if sector not in by_sector:
-                by_sector[sector] = []
-            by_sector[sector].append((ticker, score))
-        else:
-            unmapped.append(ticker)
-
-    if unmapped:
-        logger.warning(
-            "%d tickers with positive score not in sector_mapping (excluded): %s...",
-            len(unmapped),
-            ", ".join(unmapped[:10]),
-        )
-
-    # Pick highest score per sector
-    selected: list[tuple[str, float]] = []
-    for sector, tickers in by_sector.items():
-        sorted_tickers = sorted(tickers, key=lambda x: x[1], reverse=True)
-        if sorted_tickers:
-            selected.append(sorted_tickers[0])
-
-    # Return sorted by score descending
-    selected.sort(key=lambda x: x[1], reverse=True)
-    return [t[0] for t in selected]
 
 
 @dataclass
@@ -144,29 +98,59 @@ def compute_target_portfolio(
     current_cash: float,
     config: Config,
     data_provider: DataProvider,
-    sector_mapping: dict[str, str] | None = None,
-    select_one_per_sector: bool = False,
+    strategy: "Strategy | None" = None,
     profile: "MarketProfile | None" = None,
+    sector_mapping: dict[str, str] | None = None,    # deprecated
+    select_one_per_sector: bool = False,              # deprecated
 ) -> TargetPortfolio:
     """Compute the target portfolio for a given date.
 
     Pure function: given the same inputs, ALWAYS returns the same TargetPortfolio.
     No I/O outside data_provider. No clock. No broker.
 
+    Delegates strategy-related logic to `strategy`:
+      - score: compute momentum score for each ticker
+      - rank: select top tickers from scored universe
+      - entry_filters: apply regime/SMA/price/ADV filters
+      - exit_signal: check if existing positions should be sold
+      - size: compute target share counts via ATR sizing
+
     Steps (in order):
       1. Get PIT universe
-      2. Compute Clenow score and ATR for each ticker
-      3. Rank by score (top top_pct, or one per sector if select_one_per_sector)
-      4. Apply filters
-      5. Apply double exit rule (existing positions breaking 100-day SMA)
-      6. Compute current prices
-      7. Compute target positions via sequential ATR sizing
+      2. Compute score and ATR for each ticker (via strategy.score)
+      3. Rank by score (via strategy.rank)
+      4. Apply entry filters (via strategy.entry_filters)
+      4b. Exclude suspended tickers
+      5. Check exit signals (via strategy.exit_signal)
+      7. Compute target positions (via strategy.size)
       8. Return TargetPortfolio
     """
     # Resolve profile (backward-compat: falls back to US)
     if profile is None:
         from clenow.markets import get_profile
         profile = get_profile("US")
+
+    # Resolve strategy (backward-compat: auto-wrap deprecated params)
+    if strategy is None:
+        if select_one_per_sector:
+            warnings.warn(
+                "select_one_per_sector=True is deprecated; pass strategy=SectorRotation(sector_mapping) instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if not sector_mapping:
+                raise ValueError("select_one_per_sector=True requires sector_mapping")
+            from clenow.strategy.sector_rotation import SectorRotation
+            strategy = SectorRotation(sector_mapping=sector_mapping)
+        else:
+            from clenow.strategy.clenow_momentum import ClenowMomentum
+            strategy = ClenowMomentum()
+    elif sector_mapping is not None or select_one_per_sector:
+        warnings.warn(
+            "sector_mapping/select_one_per_sector ignored when strategy is provided",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # Step 1: Get point-in-time universe
     universe = data_provider.get_universe(as_of, index_id=profile.universe_index_id)
@@ -190,20 +174,8 @@ def compute_target_portfolio(
             atrs[ticker] = 0.0
             continue
 
-        # Compute Clenow score (adj_close + raw_close)
-        adj_close = ticker_data["adj_close"].dropna() if "adj_close" in ticker_data.columns else pd.Series(dtype=float)
-        raw_close = ticker_data["raw_close"].dropna() if "raw_close" in ticker_data.columns else pd.Series(dtype=float)
-
-        if len(adj_close) > 0 and len(raw_close) > 0:
-            scores[ticker] = compute_clenow_score(
-                adj_close=adj_close,
-                raw_close=raw_close,
-                score_window=profile.score_window,
-                annualization_days=profile.annualization_days,
-                gap_threshold=config.gap_threshold,
-            )
-        else:
-            scores[ticker] = 0.0
+        # Compute score via strategy
+        scores[ticker] = strategy.score(ticker, ticker_data, profile, config)
 
         # Compute ATR (raw high, low, close)
         if all(col in ticker_data.columns for col in ["raw_high", "raw_low", "raw_close"]):
@@ -225,42 +197,30 @@ def compute_target_portfolio(
             if len(rc) > 0:
                 current_prices[ticker] = float(rc.iloc[-1])
 
-    # Step 3: Rank by score
-    if select_one_per_sector:
-        if not sector_mapping:
-            raise ValueError(
-                "select_one_per_sector=True requires a non-empty sector_mapping"
-            )
-        # Select one stock per sector (highest score in each sector)
-        ranked = _select_one_per_sector(scores, sector_mapping)
-    else:
-        # Traditional: top pct of universe
-        ranked = rank_by_score(scores, config.top_pct)
+    # Step 3: Rank via strategy
+    ranked = strategy.rank(scores, config)
 
-    # Step 4: Apply sequential filters (regime, SMA, price, ADV)
-    # Pass pre-loaded all_prices to eliminate N+1 queries
-    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions, profile=profile)
+    # Step 4: Apply entry filters via strategy
+    filtered = strategy.entry_filters(
+        ranked, all_prices, data_provider, as_of, config, profile, current_positions,
+    )
 
     # Step 4b: Exclude suspended tickers from new entries
     suspended = get_suspended_tickers(filtered, all_prices, as_of, profile)
     if suspended:
         filtered = [t for t in filtered if t not in suspended]
 
-    # Step 5: Double exit rule — CRITICAL
-    # FIRST check all existing positions for 100-day SMA break
-    # Remove broken positions from the target, even if they're in the top 20%
+    # Step 5: Check exit signals for existing positions
     forced_sells: set[str] = set()
     for ticker in current_positions:
-        if _check_sma_break(ticker, all_prices, as_of, data_provider, config, sma_window=profile.exit_sma_window):
+        if strategy.exit_signal(ticker, all_prices, as_of, data_provider, profile, config):
             forced_sells.add(ticker)
 
     # Remove forced-sell tickers from the filtered list
     filtered = [t for t in filtered if t not in forced_sells]
 
-    # Step 6: current_prices already computed in step 2
-
-    # Step 7: Compute target positions via sequential ATR sizing
-    target_shares = compute_target_positions(
+    # Step 7: Compute target positions via strategy sizing
+    target_shares = strategy.size(
         filtered_tickers=filtered,
         data_provider=data_provider,
         as_of=as_of,
@@ -343,9 +303,10 @@ def run_backtest(
     initial_cash: float,
     config: Config,
     data_provider: DataProvider,
-    sector_mapping: dict[str, str] | None = None,
-    select_one_per_sector: bool = False,
+    strategy: "Strategy | None" = None,
     profile: "MarketProfile | None" = None,
+    sector_mapping: dict[str, str] | None = None,    # deprecated
+    select_one_per_sector: bool = False,              # deprecated
 ) -> BacktestResult:
     """Run a full backtest and return results.
 
@@ -361,15 +322,40 @@ def run_backtest(
       3. Return BacktestResult
 
     Args:
-        sector_mapping: ticker -> sector mapping for sector-based selection.
-        select_one_per_sector: if True, select 1 stock per sector instead of top_pct.
+        strategy: Strategy instance (ClenowMomentum or SectorRotation).
+            If None, defaults to ClenowMomentum (or SectorRotation if
+            deprecated select_one_per_sector=True).
         profile: MarketProfile driving all market-specific parameters.
             Defaults to US profile when None.
+        sector_mapping: (deprecated) ticker -> sector mapping.
+        select_one_per_sector: (deprecated) if True, use SectorRotation.
     """
     # Resolve profile (backward-compat: falls back to US)
     if profile is None:
         from clenow.markets import get_profile
         profile = get_profile("US")
+
+    # Resolve strategy (backward-compat: auto-wrap deprecated params)
+    if strategy is None:
+        if select_one_per_sector:
+            warnings.warn(
+                "select_one_per_sector=True is deprecated; pass strategy=SectorRotation(sector_mapping) instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if not sector_mapping:
+                raise ValueError("select_one_per_sector=True requires sector_mapping")
+            from clenow.strategy.sector_rotation import SectorRotation
+            strategy = SectorRotation(sector_mapping=sector_mapping)
+        else:
+            from clenow.strategy.clenow_momentum import ClenowMomentum
+            strategy = ClenowMomentum()
+    elif sector_mapping is not None or select_one_per_sector:
+        warnings.warn(
+            "sector_mapping/select_one_per_sector ignored when strategy is provided",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # Use profile capital if initial_cash not explicitly provided (0 or negative)
     if initial_cash <= 0:
@@ -379,6 +365,7 @@ def run_backtest(
     rebalance_pairs = get_rebalance_dates(start, end, config, calendar_name=profile.trading_calendar_name)
 
     # Initialize position tracker
+    from clenow.portfolio.state import PositionTracker
     tracker = PositionTracker(cash=initial_cash)
 
     # Trade log for closed positions
@@ -420,8 +407,7 @@ def run_backtest(
             current_cash=current_cash,
             config=config,
             data_provider=data_provider,
-            sector_mapping=sector_mapping,
-            select_one_per_sector=select_one_per_sector,
+            strategy=strategy,
             profile=profile,
         )
 
