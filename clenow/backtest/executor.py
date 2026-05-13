@@ -190,7 +190,11 @@ class SimulatedExecutor:
 
         # Find prev trading day close
         ticker_prices = self._prices.xs(ticker, level="ticker")
-        prev_dates = ticker_prices.index[ticker_prices.index < pd.Timestamp(target_date)]
+        # Handle both date and pd.Timestamp in index
+        if len(ticker_prices.index) > 0 and isinstance(ticker_prices.index[0], pd.Timestamp):
+            prev_dates = ticker_prices.index[ticker_prices.index < pd.Timestamp(target_date)]
+        else:
+            prev_dates = ticker_prices.index[ticker_prices.index < target_date]
         if len(prev_dates) == 0:
             return False
         prev_close = ticker_prices.loc[prev_dates[-1], "raw_close"]
