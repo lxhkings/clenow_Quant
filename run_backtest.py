@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import date
+from pathlib import Path
 
 from clenow.backtest.engine import run_backtest
 from clenow.config import Config
@@ -9,6 +10,7 @@ from clenow.data.sectors import load_sector_mapping
 from clenow.data.synology import SynologyDataProvider
 from clenow.markets import get_profile
 from clenow.report.main import generate_report
+from clenow.report.watchlist import build_watchlist, render_markdown
 from clenow.strategy import make_strategy
 
 
@@ -26,7 +28,38 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-position-pct", type=float, default=0.05)
     parser.add_argument("--top-pct", type=float, default=0.20)
     parser.add_argument("--output", type=str, default="./output")
+    parser.add_argument("--watchlist-only", action="store_true",
+                        help="Generate daily watchlist Markdown instead of full backtest.")
+    parser.add_argument("--as-of", type=date.fromisoformat, default=None,
+                        help="Date for --watchlist-only (defaults to --end).")
     args = parser.parse_args(argv)
+
+    if args.watchlist_only:
+        if args.strategy != "clenow_momentum":
+            raise SystemExit(
+                "--watchlist-only currently supports only --strategy clenow_momentum"
+            )
+        as_of = args.as_of or args.end
+        profile = get_profile(args.market)
+        config = Config(
+            market=args.market.upper(),
+            risk_factor=args.risk_factor,
+            rebalance_freq="weekly",
+        )
+        dp = SynologyDataProvider()
+        try:
+            sector_map = load_sector_mapping(profile.universe_index_id)
+            rows = build_watchlist(as_of, config, profile, dp, sector_map)
+            universe = dp.get_universe(as_of, index_id=profile.universe_index_id)
+            md = render_markdown(rows, as_of, profile, config, total_universe=len(universe))
+            out_dir = Path(args.output)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / "watchlist.md"
+            out_path.write_text(md, encoding="utf-8")
+            print(f"Watchlist: {out_path}")
+        finally:
+            dp.close()
+        return
 
     profile = get_profile(args.market)
     capital = args.capital if args.capital is not None else profile.default_starting_capital
