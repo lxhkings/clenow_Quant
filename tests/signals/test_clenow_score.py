@@ -7,7 +7,10 @@ import pandas as pd
 import pytest
 from scipy.stats import linregress
 
-from clenow.signals.clenow_score import compute_clenow_score
+from clenow.signals.clenow_score import (
+    compute_clenow_score,
+    compute_clenow_score_components,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +451,29 @@ def test_compute_clenow_score_accepts_numpy():
     result = compute_clenow_score(adj_close=prices, raw_close=prices, score_window=90)
     assert isinstance(result, float)
     assert result > 0.0
+
+
+# ===========================================================================
+# 9. ClenowScoreComponents exposure tests
+# ===========================================================================
+
+
+def test_components_match_score():
+    rng = np.random.default_rng(42)
+    adj = np.cumprod(1 + rng.normal(0.001, 0.01, 120)) * 100
+    raw = adj.copy()
+    s = compute_clenow_score(adj, raw, score_window=90, annualization_days=252)
+    c = compute_clenow_score_components(adj, raw, score_window=90, annualization_days=252)
+    assert c.score == s
+    assert 0.0 <= c.r_squared <= 1.0
+    assert c.annualized_return == np.exp(c.slope * 252) - 1
+
+
+def test_components_zero_when_short_history():
+    adj = np.linspace(100, 110, 50)
+    raw = adj.copy()
+    c = compute_clenow_score_components(adj, raw, score_window=90)
+    assert c.score == 0.0
+    assert c.slope == 0.0
+    assert c.r_squared == 0.0
+    assert c.annualized_return == 0.0
