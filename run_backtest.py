@@ -33,8 +33,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--as-of", type=date.fromisoformat, default=None,
                         help="Date for --watchlist-only (defaults to --end).")
     parser.add_argument("--universe", default="index",
-                        choices=["index", "all"],
-                        help="Universe source: index (constituents) or all (full market, CN only)")
+                        choices=["index", "all", "multi"],
+                        help="Universe source: index (constituents), all (full market), multi (多指数)")
+    parser.add_argument("--indices", type=str, default=None,
+                        help="Comma-separated indices for --universe multi (e.g. SP500,R1000)")
     args = parser.parse_args(argv)
 
     if args.watchlist_only:
@@ -44,6 +46,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         if args.universe == "all" and args.market == "hk":
             raise SystemExit("--universe all not supported for --market hk")
+        if args.universe == "multi" and not args.indices:
+            raise SystemExit("--universe multi requires --indices (e.g. --indices SP500,R1000)")
         as_of = args.as_of or args.end
         profile = get_profile(args.market)
         config = Config(
@@ -63,6 +67,13 @@ def main(argv: list[str] | None = None) -> None:
                     sector_map = load_all_us_sector_mapping()
                 else:
                     raise SystemExit("--universe all not supported for --market hk")
+            elif args.universe == "multi":
+                index_ids = [x.strip() for x in args.indices.split(",")]
+                universe = dp.get_multi_index_universe(as_of, index_ids)
+                # Combine sector maps from all indices
+                sector_map: dict[str, str] = {}
+                for idx in index_ids:
+                    sector_map.update(load_sector_mapping(idx))
             else:
                 universe = dp.get_universe(as_of, index_id=profile.universe_index_id)
                 sector_map = load_sector_mapping(profile.universe_index_id)
@@ -70,8 +81,8 @@ def main(argv: list[str] | None = None) -> None:
             out_dir = Path(args.output)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            if args.universe == "all":
-                # CSV output for full market screening
+            if args.universe == "all" or args.universe == "multi":
+                # CSV output for full market / multi-index screening
                 csv_content = render_csv(rows)
                 out_path = out_dir / "watchlist.csv"
                 out_path.write_text(csv_content, encoding="utf-8")

@@ -238,6 +238,28 @@ class SynologyDataProvider:
 
         return []
 
+    def get_multi_index_universe(
+        self, as_of: date, index_ids: list[str]
+    ) -> list[str]:
+        """Return union of multiple index constituents as of as_of.
+
+        Args:
+            as_of: Date for point-in-time lookup.
+            index_ids: List of index identifiers (e.g. ["SP500", "R1000"]).
+
+        Returns:
+            Sorted list of unique tickers from all indices.
+        """
+        all_tickers: set[str] = set()
+        for index_id in index_ids:
+            tickers = self.get_universe(as_of, index_id=index_id)
+            all_tickers.update(tickers)
+            logger.info(
+                "Loaded %d tickers from %s, total unique: %d",
+                len(tickers), index_id, len(all_tickers)
+            )
+        return sorted(all_tickers)
+
     def get_all_cn_tickers(self, as_of: date) -> list[str]:
         """Return all .SH/.SZ tickers with price data around as_of.
 

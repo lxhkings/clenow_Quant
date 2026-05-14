@@ -47,6 +47,13 @@ uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us  #
 
 输出: `output/watchlist.md` (成分股筛选结果)
 
+**多指数组合选股** (CSV格式):
+```bash
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us --universe multi --indices SP500,R1000
+```
+
+输出: `output/watchlist.csv` (SP500+R1000合并选股池，约1000+支)
+
 **全市场选股** (CSV格式):
 ```bash
 uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn --universe all  # 全A股
@@ -56,13 +63,15 @@ uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us --
 输出: `output/watchlist.csv` (Excel可直接打开)
 
 **参数说明**:
-- `--universe index` (默认) — 使用index_constituents表成分股
-- `--universe all` — 使用prices表所有tickers (支持CN/US，暂不支持HK)
+- `--universe index` (默认) — 单一指数成分股
+- `--universe multi` — 多指数合并选股池，需配合 `--indices`
+- `--universe all` — 全市场选股 (支持CN/US，暂不支持HK)
 
-**选股范围差异**:
+**选股范围对比**:
 | 参数 | CN Universe | US Universe | 输出格式 |
 |------|-------------|-------------|----------|
 | `--universe index` | CSI800 (~800支) | SP500 (~500支) | Markdown |
+| `--universe multi` | — | SP500+R1000 (~1000支) | CSV |
 | `--universe all` | 全A股 (~5200支) | 全美股 | CSV |
 
 CSV字段: `排名, 代码, 行业, Clenow评分, 回归斜率, R²拟合度, 年化收益率(%), 最新价, 100日均线, 距均线(%)`
