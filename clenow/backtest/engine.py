@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -39,6 +40,7 @@ from clenow.data.provider import DataProvider
 from clenow.data.utils import get_ticker_series as _get_ticker_series
 from clenow.errors import OrderRejection
 from clenow.signals.atr import compute_atr
+from clenow.signals.clenow_score import compute_clenow_score
 from clenow.types import Order, OrderType, Position, Side, TargetPortfolio
 
 if TYPE_CHECKING:
@@ -244,6 +246,8 @@ def compute_target_portfolio(
     precomputed_scores: dict[date, dict[str, float]] | None = None,
     precomputed_atrs: dict[date, dict[str, float]] | None = None,
     precomputed_prices: dict[date, dict[str, float]] | None = None,
+    sector_mapping: dict[str, str] | None = None,    # deprecated
+    select_one_per_sector: bool = False,              # deprecated
 ) -> TargetPortfolio:
     """Compute the target portfolio for a given date.
 
@@ -335,19 +339,8 @@ def compute_target_portfolio(
                 atrs[ticker] = 0.0
                 continue
 
-            adj_close = ticker_data["adj_close"].dropna() if "adj_close" in ticker_data.columns else pd.Series(dtype=float)
-            raw_close = ticker_data["raw_close"].dropna() if "raw_close" in ticker_data.columns else pd.Series(dtype=float)
-
-            if len(adj_close) > 0 and len(raw_close) > 0:
-                scores[ticker] = compute_clenow_score(
-                    adj_close=adj_close,
-                    raw_close=raw_close,
-                    score_window=profile.score_window,
-                    annualization_days=profile.annualization_days,
-                    gap_threshold=config.gap_threshold,
-                )
-            else:
-                scores[ticker] = 0.0
+            # Compute score via strategy (delegates to ClenowMomentum by default)
+            scores[ticker] = strategy.score(ticker, ticker_data, profile, config)
 
             if all(col in ticker_data.columns for col in ["raw_high", "raw_low", "raw_close"]):
                 high = ticker_data["raw_high"].dropna()
@@ -368,9 +361,10 @@ def compute_target_portfolio(
     # Step 3: Rank via strategy
     ranked = strategy.rank(scores, config)
 
-    # Step 4: Apply sequential filters (regime, SMA, price, ADV)
-    # Pass pre-loaded all_prices to eliminate N+1 queries
-    filtered = apply_filters(ranked, all_prices, data_provider, as_of, config, current_positions, profile=profile, bear_regime_cache=bear_regime_cache)
+    # Step 4: Apply entry filters via strategy
+    filtered = strategy.entry_filters(
+        ranked, all_prices, data_provider, as_of, config, profile, current_positions,
+    )
 
     # Step 4b: Exclude suspended tickers from new entries
     suspended = get_suspended_tickers(filtered, all_prices, as_of, profile)
