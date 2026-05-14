@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+import csv
+import io
+
 import pandas as pd
 
 from clenow.backtest.engine import get_suspended_tickers
@@ -46,6 +49,7 @@ def build_watchlist(
     profile: "MarketProfile",
     data_provider: "DataProvider",
     sector_map: dict[str, str],
+    universe: list[str] | None = None,
 ) -> list[WatchlistRow]:
     """Compute the ranked, filtered watchlist for as_of.
 
@@ -58,8 +62,12 @@ def build_watchlist(
       5. Drop suspended tickers (CN market chiefly).
       6. For each survivor, compute score components + price/sma100/dist%.
       7. Sort by score desc, assign rank from 1.
+
+    Args:
+        universe: Optional explicit universe list. If None, uses get_universe().
     """
-    universe = data_provider.get_universe(as_of, index_id=profile.universe_index_id)
+    if universe is None:
+        universe = data_provider.get_universe(as_of, index_id=profile.universe_index_id)
     if not universe:
         return []
 
@@ -200,3 +208,33 @@ def render_markdown(
     lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+def render_csv(rows: list[WatchlistRow]) -> str:
+    """Render watchlist as CSV for Excel.
+
+    Columns: rank, ticker, sector, score, slope, r_squared,
+             annualized_return_pct, price, sma100, dist_pct
+    """
+    output = io.StringIO()
+    fieldnames = [
+        "rank", "ticker", "sector", "score", "slope",
+        "r_squared", "annualized_return_pct", "price",
+        "sma100", "dist_pct",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({
+            "rank": r.rank,
+            "ticker": r.ticker,
+            "sector": r.sector or "",
+            "score": round(r.score, 3),
+            "slope": round(r.slope, 4),
+            "r_squared": round(r.r_squared, 2),
+            "annualized_return_pct": round(r.annualized_return * 100, 1),
+            "price": round(r.price, 2),
+            "sma100": round(r.sma100, 2),
+            "dist_pct": round(r.dist_pct, 1),
+        })
+    return output.getvalue()

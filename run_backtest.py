@@ -10,7 +10,7 @@ from clenow.data.sectors import load_sector_mapping
 from clenow.data.synology import SynologyDataProvider
 from clenow.markets import get_profile
 from clenow.report.main import generate_report
-from clenow.report.watchlist import build_watchlist, render_markdown
+from clenow.report.watchlist import build_watchlist, render_csv, render_markdown
 from clenow.strategy import make_strategy
 
 
@@ -32,6 +32,9 @@ def main(argv: list[str] | None = None) -> None:
                         help="Generate daily watchlist Markdown instead of full backtest.")
     parser.add_argument("--as-of", type=date.fromisoformat, default=None,
                         help="Date for --watchlist-only (defaults to --end).")
+    parser.add_argument("--universe", default="index",
+                        choices=["index", "all"],
+                        help="Universe source: index (constituents) or all (full market, CN only)")
     args = parser.parse_args(argv)
 
     if args.watchlist_only:
@@ -39,6 +42,8 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 "--watchlist-only currently supports only --strategy clenow_momentum"
             )
+        if args.universe == "all" and args.market != "cn":
+            raise SystemExit("--universe all only supported for --market cn")
         as_of = args.as_of or args.end
         profile = get_profile(args.market)
         config = Config(
@@ -48,15 +53,28 @@ def main(argv: list[str] | None = None) -> None:
         )
         dp = SynologyDataProvider()
         try:
+            # Universe selection
+            if args.universe == "all":
+                universe = dp.get_all_cn_tickers(as_of)
+            else:
+                universe = dp.get_universe(as_of, index_id=profile.universe_index_id)
             sector_map = load_sector_mapping(profile.universe_index_id)
-            rows = build_watchlist(as_of, config, profile, dp, sector_map)
-            universe = dp.get_universe(as_of, index_id=profile.universe_index_id)
-            md = render_markdown(rows, as_of, profile, config, total_universe=len(universe))
+            rows = build_watchlist(as_of, config, profile, dp, sector_map, universe=universe)
             out_dir = Path(args.output)
             out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / "watchlist.md"
-            out_path.write_text(md, encoding="utf-8")
-            print(f"Watchlist: {out_path}")
+
+            if args.universe == "all":
+                # CSV output for full market screening
+                csv_content = render_csv(rows)
+                out_path = out_dir / "watchlist.csv"
+                out_path.write_text(csv_content, encoding="utf-8")
+                print(f"Watchlist CSV: {out_path} ({len(rows)} rows from {len(universe)} tickers)")
+            else:
+                # Markdown output for index constituents
+                md = render_markdown(rows, as_of, profile, config, total_universe=len(universe))
+                out_path = out_dir / "watchlist.md"
+                out_path.write_text(md, encoding="utf-8")
+                print(f"Watchlist: {out_path}")
         finally:
             dp.close()
         return

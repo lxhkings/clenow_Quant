@@ -39,8 +39,22 @@ uv run python run_sector_backtest.py --market hk  # 港股 HSI
 
 ### 每日观察清单 / 实盘订单
 
+**指数成分股选股** (CSI800成分股):
 ```bash
-uv run python run_backtest.py --watchlist-only --as-of 2026-05-14  # Markdown观察清单
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn  # Markdown
+```
+
+**全A股选股** (5200+支):
+```bash
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn --universe all  # CSV
+```
+
+输出:
+- `--universe index` (默认) → Markdown报告 (CSI800成分股)
+- `--universe all` → CSV清单 (全A股, Excel可直接打开)
+
+实盘订单生成:
+```bash
 uv run python -m clenow.live --as-of 2026-05-14 --equity 100000 --market us  # CSV订单
 ```
 
