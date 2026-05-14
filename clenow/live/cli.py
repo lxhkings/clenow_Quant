@@ -22,11 +22,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from clenow.backtest.engine import _check_sma_break, compute_target_portfolio
+from clenow.backtest.engine import compute_target_portfolio
 from clenow.config import Config
 from clenow.data.loader import SQLDataProvider
 from clenow.live.state import load_state
 from clenow.markets import MarketProfile, get_profile
+from clenow.strategy import make_strategy
 from clenow.types import Position
 
 
@@ -37,11 +38,14 @@ def generate_orders(
     data_provider: SQLDataProvider,
     state_path: Path | None = None,
     profile: MarketProfile | None = None,
+    strategy=None,
 ) -> list[dict]:
     """Generate order list for the given date.
 
     Returns list of dicts with keys: ticker, side, shares, expected_price, reason.
     """
+    if strategy is None:
+        strategy = make_strategy("clenow_momentum")
     tracker = load_state(state_path)
     current_positions = tracker.get_positions()
 
@@ -61,6 +65,7 @@ def generate_orders(
         current_cash=current_cash,
         config=config,
         data_provider=data_provider,
+        strategy=strategy,
         profile=profile,
     )
 
@@ -77,7 +82,7 @@ def generate_orders(
         if target_shares < pos.shares:
             sell_shares = pos.shares - target_shares
             reason = _sell_reason(
-                ticker, target_shares == 0, as_of, data_provider, config
+                ticker, target_shares == 0, as_of, data_provider, config, profile, strategy,
             )
             orders.append({
                 "ticker": ticker,
@@ -138,14 +143,18 @@ def _load_current_prices(
 
 
 def _sell_reason(
-    ticker: str, full_exit: bool, as_of: date, data_provider, config: Config
+    ticker: str, full_exit: bool, as_of: date, data_provider,
+    config: Config, profile: MarketProfile, strategy,
 ) -> str:
     """Determine reason for selling a position."""
-    if full_exit:
-        if _check_sma_break(ticker, as_of, data_provider, config):
-            return "SMA break"
-        return "fell out of top 20%"
-    return "reduce position"
+    if not full_exit:
+        return "reduce position"
+    # Build minimal all_prices for strategy.exit_signal
+    lookback = as_of - timedelta(days=450)
+    all_prices = data_provider.load_prices([ticker], lookback, as_of)
+    if strategy.exit_signal(ticker, all_prices, as_of, data_provider, profile, config):
+        return "SMA break"
+    return "fell out of top N"
 
 
 def write_orders_csv(orders: list[dict], output_path: str | Path) -> None:
@@ -198,6 +207,12 @@ def main(argv: list[str] | None = None) -> None:
         choices=["us", "cn", "hk"],
         help="Market (default: us)",
     )
+    parser.add_argument(
+        "--strategy",
+        default="clenow_momentum",
+        choices=["clenow_momentum", "sector_rotation"],
+        help="Strategy to use (default: clenow_momentum)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -217,7 +232,10 @@ def main(argv: list[str] | None = None) -> None:
 
     state_path = Path(args.state) if args.state else None
 
-    print(f"Computing orders for {args.as_of} (market={args.market}) ...")
+    # Resolve strategy
+    strategy = make_strategy(args.strategy)
+
+    print(f"Computing orders for {args.as_of} (market={args.market}, strategy={args.strategy}) ...")
     orders = generate_orders(
         as_of=args.as_of,
         equity=args.equity,
@@ -225,6 +243,7 @@ def main(argv: list[str] | None = None) -> None:
         data_provider=data_provider,
         state_path=state_path,
         profile=profile,
+        strategy=strategy,
     )
 
     write_orders_csv(orders, args.output)

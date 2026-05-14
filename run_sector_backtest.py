@@ -1,18 +1,6 @@
-"""Sector rotation backtest — 1 stock per sector with higher position sizing."""
-
-import logging
-from datetime import date
-from pathlib import Path
-
-import pandas as pd
-import pymysql
-
-from clenow.backtest.engine import BacktestResult, run_backtest
-from clenow.config import Config
-from clenow.data.synology import DEFAULT_DB_CONFIG, SynologyDataProvider
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+"""Sector rotation backtest — thin wrapper over run_backtest.py with sector defaults."""
+import sys
+from run_backtest import main as run_main
 
 
 def get_sector_mapping() -> dict[str, str]:
@@ -78,20 +66,4 @@ def run_sector_backtest(
 
 
 if __name__ == "__main__":
-    result = run_sector_backtest()
-    logger.info("Backtest complete")
-
-    # Print summary
-    final_value = result.equity_curve.iloc[-1]["portfolio_value"]
-    logger.info("Final portfolio value: $%.2f", final_value)
-
-    # Save results
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-
-    result.equity_curve.to_csv(output_dir / "sector_equity_curve.csv", index=False)
-    if result.trades:
-        trades_df = pd.DataFrame(result.trades)
-        trades_df.to_csv(output_dir / "sector_trades.csv", index=False)
-
-    logger.info("Results saved to output/")
+    main()
