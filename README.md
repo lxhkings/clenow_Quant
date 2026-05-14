@@ -45,14 +45,14 @@ uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn  #
 uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us  # SP500
 ```
 
-输出: `output/watchlist.md` (成分股筛选结果)
+输出: `output/watchlist_cn.md` / `output/watchlist_us.md`
 
 **多指数组合选股** (CSV格式):
 ```bash
 uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us --universe multi --indices SP500,R1000
 ```
 
-输出: `output/watchlist.csv` (SP500+R1000合并选股池，约1000+支)
+输出: `output/watchlist_us_multi.csv` (SP500+R1000合并选股池，约1000+支)
 
 **全市场选股** (CSV格式):
 ```bash
@@ -60,9 +60,14 @@ uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn --
 uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us --universe all  # 全美股
 ```
 
-输出: `output/watchlist.csv` (Excel可直接打开)
+输出: `output/watchlist_cn_all.csv` / `output/watchlist_us_all.csv`
 
-**参数说明**:
+**文件命名规则**:
+| 参数 | 文件名示例 |
+|------|-----------|
+| `--universe index` | `watchlist_cn.md`, `watchlist_us.md` |
+| `--universe multi` | `watchlist_us_multi.csv` |
+| `--universe all` | `watchlist_cn_all.csv`, `watchlist_us_all.csv` |
 - `--universe index` (默认) — 单一指数成分股
 - `--universe multi` — 多指数合并选股池，需配合 `--indices`
 - `--universe all` — 全市场选股 (支持CN/US，暂不支持HK)

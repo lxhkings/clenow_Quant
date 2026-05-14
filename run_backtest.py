@@ -84,13 +84,14 @@ def main(argv: list[str] | None = None) -> None:
             if args.universe == "all" or args.universe == "multi":
                 # CSV output for full market / multi-index screening
                 csv_content = render_csv(rows)
-                out_path = out_dir / "watchlist.csv"
+                suffix = "_multi" if args.universe == "multi" else "_all"
+                out_path = out_dir / f"watchlist_{args.market}{suffix}.csv"
                 out_path.write_text(csv_content, encoding="utf-8")
                 print(f"Watchlist CSV: {out_path} ({len(rows)} rows from {len(universe)} tickers)")
             else:
                 # Markdown output for index constituents
                 md = render_markdown(rows, as_of, profile, config, total_universe=len(universe))
-                out_path = out_dir / "watchlist.md"
+                out_path = out_dir / f"watchlist_{args.market}.md"
                 out_path.write_text(md, encoding="utf-8")
                 print(f"Watchlist: {out_path}")
         finally:
