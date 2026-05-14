@@ -24,6 +24,7 @@ uv run python run_backtest.py --market us
 python run_backtest.py                                         # US, 2022-2026, $100k
 python run_backtest.py --market cn --start 2023-01-01          # A股
 python run_backtest.py --market hk --risk-factor 0.01          # 港股, higher sizing
+python run_backtest.py --watchlist-only --as-of 2026-05-08     # Daily watchlist Markdown
 python run_sector_backtest.py                                  # Sector rotation variant (1 per sector)
 ```
 

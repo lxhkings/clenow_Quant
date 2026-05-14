@@ -1,11 +1,12 @@
 """Daily Decision Workflow — single-point entry for live trading decisions.
 
 Usage:
-    python -m clenow.live --as-of 2026-05-08 --equity 100000 --output orders.csv
+    python -m clenow.live --as-of 2026-05-08 --equity 100000 --market us
+    python -m clenow.live --as-of 2026-05-08 --market cn --output orders.csv
 
 Internal flow:
   1. as_of = parsed date (Friday)
-  2. Load price data for [as_of - 250 days, as_of] for SP500 PIT universe
+  2. Load price data for [as_of - 250 days, as_of] for universe (SP500/CSI800/HSI)
   3. Run signals/portfolio flow (SAME compute_target_portfolio as backtest)
   4. Read current positions from ~/.clenow/positions.json
   5. Compare current vs target, generate diff orders
@@ -24,7 +25,7 @@ import pandas as pd
 
 from clenow.backtest.engine import compute_target_portfolio
 from clenow.config import Config
-from clenow.data.loader import SQLDataProvider
+from clenow.data.synology import SynologyDataProvider
 from clenow.live.state import load_state
 from clenow.markets import MarketProfile, get_profile
 from clenow.strategy import make_strategy
@@ -35,7 +36,7 @@ def generate_orders(
     as_of: date,
     equity: float,
     config: Config,
-    data_provider: SQLDataProvider,
+    data_provider: SynologyDataProvider,
     state_path: Path | None = None,
     profile: MarketProfile | None = None,
     strategy=None,
@@ -114,7 +115,7 @@ def generate_orders(
 
 
 def _load_current_prices(
-    tickers: set[str], as_of: date, data_provider: SQLDataProvider
+    tickers: set[str], as_of: date, data_provider: SynologyDataProvider
 ) -> dict[str, float]:
     """Load the most recent close prices for a set of tickers."""
     if not tickers:
@@ -190,12 +191,6 @@ def main(argv: list[str] | None = None) -> None:
         help="Output CSV path (default: orders.csv)",
     )
     parser.add_argument(
-        "--db",
-        type=str,
-        default=None,
-        help="Database path (SQLite file)",
-    )
-    parser.add_argument(
         "--state",
         type=str,
         default=None,
@@ -219,17 +214,7 @@ def main(argv: list[str] | None = None) -> None:
     profile = get_profile(args.market)
     config = Config(market=args.market.upper())
 
-    if args.db:
-        data_provider = SQLDataProvider(args.db)
-    else:
-        default_db = Path.home() / ".clenow" / "sp500.db"
-        if default_db.exists():
-            data_provider = SQLDataProvider(str(default_db))
-        else:
-            print("Error: No database specified. Use --db PATH", file=sys.stderr)
-            print(f"  Looked for: {default_db}", file=sys.stderr)
-            sys.exit(1)
-
+    data_provider = SynologyDataProvider()
     state_path = Path(args.state) if args.state else None
 
     # Resolve strategy
