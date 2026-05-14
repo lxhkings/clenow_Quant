@@ -263,6 +263,32 @@ class SynologyDataProvider:
             logger.warning("Failed to get all CN tickers: %s", exc)
         return []
 
+    def get_all_us_tickers(self, as_of: date) -> list[str]:
+        """Return all US tickers (no suffix) with price data around as_of.
+
+        Used for full-market screening (bypass index_constituents).
+        """
+        from datetime import timedelta
+        self._ensure_connection()
+        query = """
+            SELECT DISTINCT ticker
+            FROM prices
+            WHERE ticker NOT LIKE '%%.SH' AND ticker NOT LIKE '%%.SZ'
+              AND ticker NOT LIKE '%%.HK'
+              AND date >= %s AND date <= %s
+            ORDER BY ticker
+        """
+        params = [(as_of - timedelta(days=30)).isoformat(), as_of.isoformat()]
+        try:
+            df = self._read_sql(query, params)
+            if not df.empty:
+                tickers = df["ticker"].tolist()
+                logger.info("Found %d US tickers in prices table", len(tickers))
+                return tickers
+        except Exception as exc:
+            logger.warning("Failed to get all US tickers: %s", exc)
+        return []
+
     def get_index_prices(
         self, index_id: str, start: date, end: date
     ) -> pd.DataFrame:

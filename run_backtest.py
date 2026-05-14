@@ -6,7 +6,7 @@ from pathlib import Path
 
 from clenow.backtest.engine import run_backtest
 from clenow.config import Config
-from clenow.data.sectors import load_all_cn_sector_mapping, load_sector_mapping
+from clenow.data.sectors import load_all_cn_sector_mapping, load_all_us_sector_mapping, load_sector_mapping
 from clenow.data.synology import SynologyDataProvider
 from clenow.markets import get_profile
 from clenow.report.main import generate_report
@@ -42,8 +42,8 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(
                 "--watchlist-only currently supports only --strategy clenow_momentum"
             )
-        if args.universe == "all" and args.market != "cn":
-            raise SystemExit("--universe all only supported for --market cn")
+        if args.universe == "all" and args.market == "hk":
+            raise SystemExit("--universe all not supported for --market hk")
         as_of = args.as_of or args.end
         profile = get_profile(args.market)
         config = Config(
@@ -55,8 +55,14 @@ def main(argv: list[str] | None = None) -> None:
         try:
             # Universe selection
             if args.universe == "all":
-                universe = dp.get_all_cn_tickers(as_of)
-                sector_map = load_all_cn_sector_mapping()
+                if args.market == "cn":
+                    universe = dp.get_all_cn_tickers(as_of)
+                    sector_map = load_all_cn_sector_mapping()
+                elif args.market == "us":
+                    universe = dp.get_all_us_tickers(as_of)
+                    sector_map = load_all_us_sector_mapping()
+                else:
+                    raise SystemExit("--universe all not supported for --market hk")
             else:
                 universe = dp.get_universe(as_of, index_id=profile.universe_index_id)
                 sector_map = load_sector_mapping(profile.universe_index_id)

@@ -39,31 +39,33 @@ uv run python run_sector_backtest.py --market hk  # 港股 HSI
 
 ### 每日观察清单 / 实盘订单
 
-**指数成分股选股** (CSI800成分股, Markdown格式):
+**指数成分股选股** (Markdown格式):
 ```bash
-uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn  # CSI800
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us  # SP500
 ```
 
-输出: `output/watchlist.md` (CSI800成分股, 约800支筛选后80-100支)
+输出: `output/watchlist.md` (成分股筛选结果)
 
-**全A股选股** (5200+支, CSV格式):
+**全市场选股** (CSV格式):
 ```bash
-uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn --universe all
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market cn --universe all  # 全A股
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14 --market us --universe all  # 全美股
 ```
 
-输出: `output/watchlist.csv` (Excel可直接打开, 约5200支筛选后200+支)
+输出: `output/watchlist.csv` (Excel可直接打开)
 
 **参数说明**:
 - `--universe index` (默认) — 使用index_constituents表成分股
-- `--universe all` — 使用prices表所有.SH/.SZ tickers (仅支持CN市场)
+- `--universe all` — 使用prices表所有tickers (支持CN/US，暂不支持HK)
 
 **选股范围差异**:
-| 参数 | Universe | 输出格式 | 篮选范围 |
-|------|----------|----------|----------|
-| `--universe index` | CSI800成分股 | Markdown | 约800支 |
-| `--universe all` | 全A股 | CSV | 约5200支 (含ST、流动性差股票) |
+| 参数 | CN Universe | US Universe | 输出格式 |
+|------|-------------|-------------|----------|
+| `--universe index` | CSI800 (~800支) | SP500 (~500支) | Markdown |
+| `--universe all` | 全A股 (~5200支) | 全美股 | CSV |
 
-CSV字段: `rank, ticker, sector, score, slope, r_squared, annualized_return_pct, price, sma100, dist_pct`
+CSV字段: `排名, 代码, 行业, Clenow评分, 回归斜率, R²拟合度, 年化收益率(%), 最新价, 100日均线, 距均线(%)`
 
 实盘订单生成:
 ```bash
