@@ -5,30 +5,11 @@ from datetime import date
 
 from clenow.backtest.engine import run_backtest
 from clenow.config import Config
+from clenow.data.sectors import load_sector_mapping
 from clenow.data.synology import SynologyDataProvider
 from clenow.markets import get_profile
 from clenow.report.main import generate_report
 from clenow.strategy import make_strategy
-
-
-def _get_sector_mapping(index_id: str) -> dict[str, str]:
-    import pymysql
-    from clenow.data.synology import DEFAULT_DB_CONFIG
-    conn = pymysql.connect(**DEFAULT_DB_CONFIG)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT ticker, sector FROM index_constituents "
-            "WHERE index_id = %s AND sector IS NOT NULL AND sector != '' "
-            "AND snapshot_date = ("
-            "  SELECT MAX(snapshot_date) FROM index_constituents "
-            "  WHERE index_id = %s AND sector IS NOT NULL AND sector != ''"
-            ")",
-            (index_id, index_id),
-        )
-        return dict(cur.fetchall())
-    finally:
-        conn.close()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -55,7 +36,7 @@ def main(argv: list[str] | None = None) -> None:
 
     strat_kwargs = {}
     if args.strategy == "sector_rotation":
-        strat_kwargs["sector_mapping"] = _get_sector_mapping(profile.universe_index_id)
+        strat_kwargs["sector_mapping"] = load_sector_mapping(profile.universe_index_id)
         if not strat_kwargs["sector_mapping"]:
             raise SystemExit(
                 f"sector_rotation requires sector data in index_constituents for {profile.universe_index_id}; none found"
