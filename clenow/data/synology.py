@@ -346,7 +346,14 @@ class SynologyDataProvider:
 
             # If last change was ADDED with no REMOVED, it's still active
             if current_added:
-                ranges.append((current_added, None))
+                # Check if this is recent-only data (no historical PIT)
+                # If added_date is within 30 days of today and no historical changes,
+                # treat as valid for all dates (fallback for sparse snapshot data)
+                today = date.today()
+                if (today - current_added).days <= 30 and len(changes) == 1:
+                    ranges = [(date.min, None)]
+                else:
+                    ranges.append((current_added, None))
 
             if ranges:
                 self._pit_index[ticker] = ranges
