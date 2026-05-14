@@ -213,28 +213,28 @@ def render_markdown(
 def render_csv(rows: list[WatchlistRow]) -> str:
     """Render watchlist as CSV for Excel.
 
-    Columns: rank, ticker, sector, score, slope, r_squared,
-             annualized_return_pct, price, sma100, dist_pct
+    Columns with Chinese headers: 排名, 代码, 行业, Clenow评分,
+    回归斜率, R²拟合度, 年化收益率(%), 最新价, 100日均线, 距均线(%)
     """
     output = io.StringIO()
     fieldnames = [
-        "rank", "ticker", "sector", "score", "slope",
-        "r_squared", "annualized_return_pct", "price",
-        "sma100", "dist_pct",
+        "排名", "代码", "行业", "Clenow评分",
+        "回归斜率", "R²拟合度", "年化收益率(%)",
+        "最新价", "100日均线", "距均线(%)",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     for r in rows:
         writer.writerow({
-            "rank": r.rank,
-            "ticker": r.ticker,
-            "sector": r.sector or "",
-            "score": round(r.score, 3),
-            "slope": round(r.slope, 4),
-            "r_squared": round(r.r_squared, 2),
-            "annualized_return_pct": round(r.annualized_return * 100, 1),
-            "price": round(r.price, 2),
-            "sma100": round(r.sma100, 2),
-            "dist_pct": round(r.dist_pct, 1),
+            "排名": r.rank,
+            "代码": r.ticker,
+            "行业": r.sector or "",
+            "Clenow评分": round(r.score, 3),
+            "回归斜率": round(r.slope, 4),
+            "R²拟合度": round(r.r_squared, 2),
+            "年化收益率(%)": round(r.annualized_return * 100, 1),
+            "最新价": round(r.price, 2),
+            "100日均线": round(r.sma100, 2),
+            "距均线(%)": round(r.dist_pct, 1),
         })
     return output.getvalue()
