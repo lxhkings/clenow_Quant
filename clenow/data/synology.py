@@ -133,11 +133,15 @@ class SynologyDataProvider:
         date, ticker, raw_open, raw_high, raw_low, raw_close,
         volume, adj_close, dividend, split_ratio. No index set.
         Empty result returns an empty DataFrame with the same schema (no MultiIndex).
+
+        adj_close: If column exists and has data, use it. Otherwise fallback to raw_close.
         """
         self._ensure_connection()
         placeholders = ",".join(["%s"] * len(tickers))
+        # Use COALESCE to fallback to close if adj_close is NULL or column missing
         query = f"""
-            SELECT date, ticker, `open`, `high`, `low`, `close`, volume
+            SELECT date, ticker, `open`, `high`, `low`, `close`, volume,
+                   COALESCE(adj_close, `close`) AS adj_close
             FROM prices
             WHERE ticker IN ({placeholders})
               AND date >= %s
@@ -149,7 +153,21 @@ class SynologyDataProvider:
         try:
             df = self._read_sql(query, params)
         except Exception as exc:
-            raise DataAccessError(f"Failed to load prices: {exc}") from exc
+            # Fallback: adj_close column may not exist, try without it
+            try:
+                query_fallback = f"""
+                    SELECT date, ticker, `open`, `high`, `low`, `close`, volume
+                    FROM prices
+                    WHERE ticker IN ({placeholders})
+                      AND date >= %s
+                      AND date <= %s
+                    ORDER BY date, ticker
+                """
+                df = self._read_sql(query_fallback, params)
+                if not df.empty:
+                    df["adj_close"] = df["close"]
+            except Exception as exc2:
+                raise DataAccessError(f"Failed to load prices: {exc2}") from exc2
 
         if df.empty:
             return pd.DataFrame(columns=[
@@ -162,9 +180,12 @@ class SynologyDataProvider:
             "open": "raw_open", "high": "raw_high",
             "low": "raw_low", "close": "raw_close",
         })
-        for col in ("raw_open", "raw_high", "raw_low", "raw_close", "volume"):
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
-        df["adj_close"] = df["raw_close"]
+        for col in ("raw_open", "raw_high", "raw_low", "raw_close", "volume", "adj_close"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+        # Final fallback: if adj_close still missing or all NaN, use raw_close
+        if "adj_close" not in df.columns or df["adj_close"].isna().all():
+            df["adj_close"] = df["raw_close"]
         df["dividend"] = 0.0
         df["split_ratio"] = 1.0
         return df[[
