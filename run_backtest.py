@@ -6,7 +6,7 @@ from pathlib import Path
 
 from clenow.backtest.engine import run_backtest
 from clenow.config import Config
-from clenow.data.sectors import load_sector_mapping
+from clenow.data.sectors import load_all_cn_sector_mapping, load_sector_mapping
 from clenow.data.synology import SynologyDataProvider
 from clenow.markets import get_profile
 from clenow.report.main import generate_report
@@ -56,9 +56,10 @@ def main(argv: list[str] | None = None) -> None:
             # Universe selection
             if args.universe == "all":
                 universe = dp.get_all_cn_tickers(as_of)
+                sector_map = load_all_cn_sector_mapping()
             else:
                 universe = dp.get_universe(as_of, index_id=profile.universe_index_id)
-            sector_map = load_sector_mapping(profile.universe_index_id)
+                sector_map = load_sector_mapping(profile.universe_index_id)
             rows = build_watchlist(as_of, config, profile, dp, sector_map, universe=universe)
             out_dir = Path(args.output)
             out_dir.mkdir(parents=True, exist_ok=True)

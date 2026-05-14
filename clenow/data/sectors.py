@@ -35,3 +35,26 @@ def load_sector_mapping(
         return dict(cur.fetchall())
     finally:
         conn.close()
+
+
+def load_all_cn_sector_mapping(db_config: dict | None = None) -> dict[str, str]:
+    """Load ticker -> sector mapping for all CN stocks from stocks.gics_sector.
+
+    Args:
+        db_config: Optional pymysql config; defaults to DEFAULT_DB_CONFIG.
+
+    Returns:
+        Dict mapping ticker to sector. Empty dict if no rows found.
+    """
+    cfg = db_config or DEFAULT_DB_CONFIG
+    conn = pymysql.connect(**cfg)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ticker, gics_sector FROM stocks "
+            "WHERE (ticker LIKE '%.SH' OR ticker LIKE '%.SZ') "
+            "AND gics_sector IS NOT NULL AND gics_sector != ''"
+        )
+        return dict(cur.fetchall())
+    finally:
+        conn.close()
