@@ -17,21 +17,31 @@ uv sync
 
 ## 快速开始
 
-运行回测:
+### 全市场选股 (不限行业)
+
+按Clenow评分排序, 取前20%, 不限行业:
+
 ```bash
-python run_backtest.py                     # 美股, 默认参数
-python run_backtest.py --market cn         # CSI800 (A股)
-python run_backtest.py --market hk         # HSI (港股)
+uv run python run_backtest.py                     # 美股 SP500, 默认参数
+uv run python run_backtest.py --market cn         # A股 CSI800
+uv run python run_backtest.py --market hk         # 港股 HSI
 ```
 
-生成每日观察清单 (实盘准备):
+### 行业轮动 (每行业选1支)
+
+每GICS行业选评分最高1支, 分散配置:
+
 ```bash
-python run_backtest.py --watchlist-only --as-of 2026-05-14
+uv run python run_sector_backtest.py              # 美股, 默认参数
+uv run python run_sector_backtest.py --market cn  # A股 CSI800
+uv run python run_sector_backtest.py --market hk  # 港股 HSI
 ```
 
-实盘交易订单列表:
+### 每日观察清单 / 实盘订单
+
 ```bash
-python -m clenow.live --as-of 2026-05-14 --equity 100000 --market us
+uv run python run_backtest.py --watchlist-only --as-of 2026-05-14  # Markdown观察清单
+uv run python -m clenow.live --as-of 2026-05-14 --equity 100000 --market us  # CSV订单
 ```
 
 ## 策略
